@@ -318,13 +318,14 @@ func cmdFleet(ctx context.Context, args []string) error {
 	bucket := fs.String("bucket", "scttfrdmn-lith-bench", "bucket granted read/write")
 	profile := fs.String("profile", os.Getenv("AWS_PROFILE"), "AWS profile passed to spawn")
 	dry := fs.Bool("dry-run", false, "print spawn commands only")
+	spawnBin := fs.String("spawn", envOr("ADIT_SPAWN", "spawn"), "spawn binary (env ADIT_SPAWN)")
 	_ = fs.Parse(args[1:])
 	if *name == "" {
 		return errors.New("--name is required")
 	}
 	switch args[0] {
 	case "status":
-		ls, err := fleet.List(ctx, "spawn", *profile, *name)
+		ls, err := fleet.List(ctx, *spawnBin, *profile, *name)
 		if err != nil {
 			return err
 		}
@@ -345,22 +346,28 @@ func cmdFleet(ctx context.Context, args []string) error {
 			Name: *name, Candidates: cs, TTL: *ttl, Bucket: *bucket, Profile: *profile,
 			Client: fleet.Role{Name: "client", InstanceType: *clientType, Count: *clients, AMI: *clientAMI, Command: *clientCmd, CostLimit: *clientCap, VolumeGiB: 200},
 			Proxy:  fleet.Role{Name: "proxy", InstanceType: *proxyType, Count: *proxies, AMI: *proxyAMI, Command: *proxyCmd, CostLimit: *proxyCap, VolumeGiB: 100},
-			AMIFor: amiFor, Spawn: "spawn", Log: os.Stderr, DryRun: *dry,
+			AMIFor: amiFor, Spawn: *spawnBin, Log: os.Stderr, DryRun: *dry,
 		}
-		boxes, err := s.Up(ctx, func(region string) *ec2.Client {
+		ec2For := func(region string) *ec2.Client {
 			cfg, _ := awsConfig(ctx, region)
 			return ec2.NewFromConfig(cfg)
-		})
+		}
+		boxes, err := s.Up(ctx, ec2For)
 		for _, b := range boxes {
 			fmt.Printf("%s\t%s\t%s\t%s\tspot=%v\n", b.Name, b.Role, b.InstanceID, b.AZ, b.Spot)
 		}
-		return err
+		if err != nil || *dry {
+			return err
+		}
+		// Never trust the flag: an EFA fleet whose boxes have no EFA device is not
+		// a fleet (spawn#1112). Check the attached interface type of every box.
+		return fleet.VerifyEFA(ctx, ec2For, boxes)
 	case "down":
-		ls, err := fleet.List(ctx, "spawn", *profile, *name)
+		ls, err := fleet.List(ctx, *spawnBin, *profile, *name)
 		if err != nil {
 			return err
 		}
-		s := &fleet.Spec{Name: *name, Spawn: "spawn", Profile: *profile, Log: os.Stderr, DryRun: *dry}
+		s := &fleet.Spec{Name: *name, Spawn: *spawnBin, Profile: *profile, Log: os.Stderr, DryRun: *dry}
 		var boxes []fleet.Box
 		regions := map[string]bool{}
 		for _, l := range ls {
@@ -370,7 +377,7 @@ func cmdFleet(ctx context.Context, args []string) error {
 		if err := s.Down(ctx, boxes); err != nil {
 			return err
 		}
-		left, err := fleet.WaitGone(ctx, "spawn", *profile, *name, 15*time.Second, time.Now().Add(10*time.Minute))
+		left, err := fleet.WaitGone(ctx, *spawnBin, *profile, *name, 15*time.Second, time.Now().Add(10*time.Minute))
 		if err != nil {
 			return err
 		}
@@ -394,11 +401,18 @@ func cmdFleet(ctx context.Context, args []string) error {
 	return fmt.Errorf("fleet %s: unknown", args[0])
 }
 
+func envOr(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+
 func cmdTeardown(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("teardown", flag.ExitOnError)
 	profile := fs.String("profile", os.Getenv("AWS_PROFILE"), "AWS profile")
 	_ = fs.Parse(args)
-	ls, err := fleet.List(ctx, "spawn", *profile, "")
+	ls, err := fleet.List(ctx, envOr("ADIT_SPAWN", "spawn"), *profile, "")
 	if err != nil {
 		return err
 	}

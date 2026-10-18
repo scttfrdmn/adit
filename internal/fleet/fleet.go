@@ -452,3 +452,32 @@ func WaitGone(ctx context.Context, spawn, profile, fleet string, every time.Dura
 		time.Sleep(every)
 	}
 }
+
+// VerifyEFA fails unless every box's primary interface is an EFA. A launch
+// flag is not evidence: spawn once accepted --efa and attached a plain ENA.
+func VerifyEFA(ctx context.Context, ec2For EC2For, boxes []Box) error {
+	var bad []string
+	for _, b := range boxes {
+		out, err := ec2For(b.Region).DescribeInstances(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{b.InstanceID}})
+		if err != nil {
+			return fmt.Errorf("describe %s: %w", b.Name, err)
+		}
+		efa := false
+		for _, r := range out.Reservations {
+			for _, in := range r.Instances {
+				for _, ni := range in.NetworkInterfaces {
+					if aws.ToString(ni.InterfaceType) == "efa" {
+						efa = true
+					}
+				}
+			}
+		}
+		if !efa {
+			bad = append(bad, b.Name)
+		}
+	}
+	if len(bad) > 0 {
+		return fmt.Errorf("no EFA interface on %s: retire the fleet (aditctl fleet down) and check the spawn version", strings.Join(bad, ", "))
+	}
+	return nil
+}
