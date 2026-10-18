@@ -17,7 +17,8 @@ echo "opts=$-"
 ROLE=${1-}
 [[ $ROLE == proxy || $ROLE == client ]] || { echo "usage: $0 proxy|client" >&2; exit 2; }
 NIXL_TAG=${NIXL_TAG:-v1.2.0}
-ETCD_CPP_TAG=${ETCD_CPP_TAG:-v0.15.4}
+# v0.15.4 (latest tag) uses GPR_ASSERT, which gRPC 1.73 removed; NIXL builds master. Pinned here.
+ETCD_CPP_REF=${ETCD_CPP_REF:-7c6e714f188f9576e25e0350cac4181139eec23e}
 # NIXL needs absl/log, newer than Ubuntu 24.04's Abseil; gRPC (for etcd-cpp, for nixlbench) must
 # then be built against the same Abseil, or two Abseils meet at runtime. Same recipe and tags as
 # NIXL's own contrib/Dockerfile at the pinned tag.
@@ -103,8 +104,9 @@ if ! done_ grpc; then
 fi
 
 if ! done_ etcdcpp; then
-    cd "$SRC" && rm -rf etcd-cpp-apiv3 && git clone -q --depth 1 -b "$ETCD_CPP_TAG" https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3.git || fail etcd-cpp clone
-    cd etcd-cpp-apiv3 && sed -i '/^find_dependency(cpprestsdk)$/d' etcd-cpp-api-config.in.cmake
+    cd "$SRC" && rm -rf etcd-cpp-apiv3 && git clone -q https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3.git || fail etcd-cpp clone
+    cd etcd-cpp-apiv3 && git checkout -q "$ETCD_CPP_REF" || fail etcd-cpp checkout
+    sed -i '/^find_dependency(cpprestsdk)$/d' etcd-cpp-api-config.in.cmake
     cmake -B build -G Ninja -DBUILD_ETCD_CORE_ONLY=ON -DCMAKE_BUILD_TYPE=Release -DETCD_CMAKE_CXX_STANDARD=17 \
         -DCMAKE_PREFIX_PATH=/usr/local -DBUILD_ETCD_TESTS=OFF && ninja -C build install || fail etcd-cpp build
     ldconfig
@@ -172,7 +174,7 @@ done
     echo "arch=$arch"
     echo "kernel=$(uname -r)"
     echo "nixl=$NIXL_TAG"
-    echo "etcd_cpp=$ETCD_CPP_TAG"
+    echo "etcd_cpp=$ETCD_CPP_REF"
     echo "absl=$ABSL_TAG"
     echo "grpc=$GRPC_TAG"
     echo "efa_installer=$(cat /opt/amazon/efa_installed_packages 2>/dev/null | grep -m1 -o 'EFA installer version: [0-9.]*' | awk '{print $4}')"
