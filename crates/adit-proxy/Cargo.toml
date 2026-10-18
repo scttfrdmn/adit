@@ -25,7 +25,9 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+sha2.workspace = true
+base64.workspace = true
+
 [dev-dependencies]
 adit-fetch = { workspace = true, features = ["mock"] }
 reqwest.workspace = true
-sha2.workspace = true

@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "adit-client"
+description = "adit client: register a GPU buffer with NIXL, request objects from adit proxies, account completion, verify on the GPU"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[features]
+default = []
+stub-api = ["nixl-sys/stub-api"]
+
+[dependencies]
+adit-proto.workspace = true
+# Stripe planning only; the CRT stays out of the client.
+adit-fetch = { workspace = true, default-features = false }
+nixl-sys.workspace = true
+cudarc.workspace = true
+reqwest.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+base64.workspace = true
+clap.workspace = true
+
+[dev-dependencies]
+adit-proxy = { path = "../adit-proxy", features = ["stub-api"] }
+adit-fetch = { workspace = true, features = ["mock", "crt"] }
+axum.workspace = true

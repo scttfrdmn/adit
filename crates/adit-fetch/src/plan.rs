@@ -51,6 +51,7 @@ pub fn stripe(range: Range<u64>, n: usize, align: u64) -> Vec<Range<u64>> {
 }
 
 #[cfg(test)]
+#[allow(clippy::single_range_in_vec_init)]
 mod tests {
     use super::*;
 

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+#![allow(clippy::single_range_in_vec_init)]
 //! The proxy end to end over HTTP: mock S3 behind, loopback "RDMA" in front.
 
 use std::sync::Arc;
