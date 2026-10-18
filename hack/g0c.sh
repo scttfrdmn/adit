@@ -12,13 +12,15 @@ set -uo pipefail
 echo "opts=$-"
 CLIENT=$1 PROXY=$2 PIP=$3 RUNS=${4-2} CHUNKS=${5-"4 8 16"} SLOTS=${6-"16 32 64 128 256"}
 SPAWN=${ADIT_SPAWN:-spawn}
+BUCKET=${BUCKET:-scttfrdmn-lith-bench}
+REGION=${REGION:-us-east-1}
 COMMIT=$(git rev-parse --short HEAD)
 OUT=bench/runs/g0c-$(date -u +%Y%m%dT%H%M%SZ)
 mkdir -p "$OUT"
 on() { local box=$1; shift; timeout 900 "$SPAWN" connect "$box" --user ubuntu -- "$*" 2>&1 | grep -v -E 'newer version|releases/tag|^$|Looking up|Found instance|Connecting|Permanently'; }
 log() { echo "[$(date -u +%FT%TZ)] $*" | tee -a "$OUT/run.log"; }
 
-on "$CLIENT" "test -f /tmp/t1-plan.jsonl || (aws s3 cp --only-show-errors s3://scttfrdmn-lith-bench/adit/manifests/t1.jsonl /tmp/t1.jsonl && cd /opt/adit-src/adit && aditctl presign --manifest /tmp/t1.jsonl --out /tmp/t1-plan.jsonl --ttl 6h) && echo plan-ok" | tee -a "$OUT/run.log"
+on "$CLIENT" "command -v aditctl >/dev/null || (aws s3 cp --only-show-errors s3://$BUCKET/adit/bin/aditctl-linux-amd64 /tmp/aditctl && sudo install /tmp/aditctl /usr/local/bin/aditctl); test -f /tmp/t1-plan.jsonl || (aws s3 cp --only-show-errors s3://$BUCKET/adit/manifests/t1.jsonl /tmp/t1.jsonl && cd /opt/adit-src/adit && aditctl presign --region $REGION --manifest /tmp/t1.jsonl --out /tmp/t1-plan.jsonl --ttl 6h) && echo plan-ok" | tee -a "$OUT/run.log"
 
 for c in $CHUNKS; do
     for s in $SLOTS; do
