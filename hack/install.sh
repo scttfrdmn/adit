@@ -81,6 +81,8 @@ CUDA=""
 if [[ $ROLE == client ]]; then
     CUDA=$(ls -d /usr/local/cuda 2>/dev/null)
     [[ -n $CUDA ]] || fail "no /usr/local/cuda on a client box"
+    # sudo resets PATH; NIXL's meson needs nvcc for its CUDA kernels.
+    export PATH=$CUDA/bin:$PATH
 fi
 
 if ! done_ absl; then
