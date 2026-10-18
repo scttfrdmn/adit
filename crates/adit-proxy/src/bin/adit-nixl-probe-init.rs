@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // from registered memory as they would in the proxy.
     let slots = total.div_ceil(chunk);
     let pool = Arc::new(Pool::new(slots, chunk));
-    let writer = NixlWriter::new(&a.agent_name, &a.backend, &pool)?;
+    let writer = NixlWriter::new(&a.agent_name, &a.backend, &pool)?.with_deadline(std::time::Duration::from_secs(30));
 
     let mut held = Vec::with_capacity(slots);
     let mut x = a.seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;

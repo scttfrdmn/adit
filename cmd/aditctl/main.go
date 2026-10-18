@@ -319,6 +319,7 @@ func cmdFleet(ctx context.Context, args []string) error {
 	profile := fs.String("profile", os.Getenv("AWS_PROFILE"), "AWS profile passed to spawn")
 	dry := fs.Bool("dry-run", false, "print spawn commands only")
 	spawnBin := fs.String("spawn", envOr("ADIT_SPAWN", "spawn"), "spawn binary (env ADIT_SPAWN)")
+	clusterPG := fs.Bool("cluster-pg", false, "place every box in one cluster placement group per AZ")
 	_ = fs.Parse(args[1:])
 	if *name == "" {
 		return errors.New("--name is required")
@@ -343,7 +344,7 @@ func cmdFleet(ctx context.Context, args []string) error {
 			return err
 		}
 		s := &fleet.Spec{
-			Name: *name, Candidates: cs, TTL: *ttl, Bucket: *bucket, Profile: *profile,
+			Name: *name, Candidates: cs, ClusterPG: *clusterPG, TTL: *ttl, Bucket: *bucket, Profile: *profile,
 			Client: fleet.Role{Name: "client", InstanceType: *clientType, Count: *clients, AMI: *clientAMI, Command: *clientCmd, CostLimit: *clientCap, VolumeGiB: 200},
 			Proxy:  fleet.Role{Name: "proxy", InstanceType: *proxyType, Count: *proxies, AMI: *proxyAMI, Command: *proxyCmd, CostLimit: *proxyCap, VolumeGiB: 100},
 			AMIFor: amiFor, Spawn: *spawnBin, Log: os.Stderr, DryRun: *dry,
@@ -391,11 +392,29 @@ func cmdFleet(ctx context.Context, args []string) error {
 		}
 		for r := range regions {
 			cfg, _ := awsConfig(ctx, r)
-			if err := fleet.DeleteSG(ctx, ec2.NewFromConfig(cfg), *name); err != nil {
+			e := ec2.NewFromConfig(cfg)
+			// spawn list drops shutting-down instances; wait on EC2 itself.
+			for deadline := time.Now().Add(20 * time.Minute); ; {
+				live, err := fleet.Live(ctx, e, *name)
+				if err != nil {
+					return err
+				}
+				if len(live) == 0 {
+					break
+				}
+				if time.Now().After(deadline) {
+					return fmt.Errorf("%s: still live after 20 min: %v", r, live)
+				}
+				time.Sleep(15 * time.Second)
+			}
+			if err := fleet.DeleteSG(ctx, e, *name); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: %s: %v\n", r, err)
+			}
+			if err := fleet.DeletePGs(ctx, e, *name); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: %s: %v\n", r, err)
 			}
 		}
-		fmt.Printf("fleet %s: terminated, verified via spawn list\n", *name)
+		fmt.Printf("fleet %s: terminated, verified via spawn list and EC2\n", *name)
 		return nil
 	}
 	return fmt.Errorf("fleet %s: unknown", args[0])
@@ -411,18 +430,36 @@ func envOr(k, def string) string {
 func cmdTeardown(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("teardown", flag.ExitOnError)
 	profile := fs.String("profile", os.Getenv("AWS_PROFILE"), "AWS profile")
+	regions := fs.String("regions", "us-east-1,us-east-2,us-west-2", "regions to check on EC2 directly")
 	_ = fs.Parse(args)
 	ls, err := fleet.List(ctx, envOr("ADIT_SPAWN", "spawn"), *profile, "")
 	if err != nil {
 		return err
 	}
+	n := 0
 	for _, l := range ls {
-		fmt.Printf("REMAINING %s %s %s %s %s\n", l.Name, l.InstanceID, l.InstanceType, l.State, l.Region)
+		fmt.Printf("REMAINING (spawn) %s %s %s %s %s\n", l.Name, l.InstanceID, l.InstanceType, l.State, l.Region)
+		n++
 	}
-	if len(ls) > 0 {
-		return fmt.Errorf("%d adit instance(s) remain", len(ls))
+	// spawn list omits shutting-down instances; EC2 is the authority.
+	for _, r := range strings.Split(*regions, ",") {
+		cfg, err := awsConfig(ctx, r)
+		if err != nil {
+			return err
+		}
+		live, err := fleet.Live(ctx, ec2.NewFromConfig(cfg), "")
+		if err != nil {
+			return fmt.Errorf("%s: %w", r, err)
+		}
+		for _, l := range live {
+			fmt.Printf("REMAINING (ec2 %s) %s\n", r, l)
+			n++
+		}
 	}
-	fmt.Println("teardown verified: no adit instances in spawn list")
+	if n > 0 {
+		return fmt.Errorf("%d adit instance(s) remain", n)
+	}
+	fmt.Printf("teardown verified: no adit instances in spawn list or EC2 (%s)\n", *regions)
 	return nil
 }
 

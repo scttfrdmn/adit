@@ -80,11 +80,14 @@ type Role struct {
 type Spec struct {
 	Name       string
 	Candidates []Candidate
-	TTL        string
-	Bucket     string // read/write grant for results and data
-	Client     Role
-	Proxy      Role
-	Profile    string
+	// PlacementGroup, when set, is a cluster placement group (created per fleet
+	// and AZ by Up) that every box joins.
+	ClusterPG bool
+	TTL       string
+	Bucket    string // read/write grant for results and data
+	Client    Role
+	Proxy     Role
+	Profile   string
 	// AMIFor resolves an AMI for a role in a region when Role.AMI is empty.
 	AMIFor func(ctx context.Context, region string, r Role) (string, error)
 	// Spawn is the spawn binary; Log receives every command and its output.
@@ -209,6 +212,13 @@ func OperatorCIDR(ctx context.Context) (string, error) {
 // LaunchArgs builds the spawn command line for one box. Exposed for tests and
 // --dry-run.
 func (s *Spec) LaunchArgs(r Role, i int, c Candidate, subnet, sg, ami, idFile string) []string {
+	return s.launchArgs(r, i, c, subnet, sg, ami, idFile, "")
+}
+
+// PGName is the per-fleet, per-AZ cluster placement group (a cluster group binds to one AZ).
+func PGName(fleet, az string) string { return "adit-" + fleet + "-" + az }
+
+func (s *Spec) launchArgs(r Role, i int, c Candidate, subnet, sg, ami, idFile, pg string) []string {
 	name := fmt.Sprintf("adit-%s-%s-%d", s.Name, r.Name, i)
 	a := []string{"launch", name,
 		"--region", c.Region, "--az", c.AZ, "--subnet-id", subnet, "--security-group-ids", sg,
@@ -232,7 +242,68 @@ func (s *Spec) LaunchArgs(r Role, i int, c Candidate, subnet, sg, ami, idFile st
 	if r.Command != "" {
 		a = append(a, "--command", r.Command, "--on-complete", "terminate")
 	}
+	if pg != "" {
+		a = append(a, "--placement-group", pg)
+	}
 	return a
+}
+
+// EnsurePG creates (or reuses) a cluster placement group.
+func EnsurePG(ctx context.Context, c *ec2.Client, name, fleet string) error {
+	_, err := c.CreatePlacementGroup(ctx, &ec2.CreatePlacementGroupInput{
+		GroupName: aws.String(name),
+		Strategy:  types.PlacementStrategyCluster,
+		TagSpecifications: []types.TagSpecification{{ResourceType: types.ResourceTypePlacementGroup, Tags: []types.Tag{
+			{Key: aws.String("adit:fleet"), Value: aws.String(fleet)},
+		}}},
+	})
+	if err != nil && !strings.Contains(err.Error(), "Duplicate") && !strings.Contains(err.Error(), "already exists") {
+		return fmt.Errorf("create placement group %s: %w", name, err)
+	}
+	return nil
+}
+
+// DeletePGs removes the fleet's placement groups (tagged adit:fleet=<fleet>).
+func DeletePGs(ctx context.Context, c *ec2.Client, fleet string) error {
+	out, err := c.DescribePlacementGroups(ctx, &ec2.DescribePlacementGroupsInput{Filters: []types.Filter{{Name: aws.String("tag:adit:fleet"), Values: []string{fleet}}}})
+	if err != nil {
+		return err
+	}
+	for _, g := range out.PlacementGroups {
+		if _, err := c.DeletePlacementGroup(ctx, &ec2.DeletePlacementGroupInput{GroupName: g.GroupName}); err != nil {
+			return fmt.Errorf("delete %s: %w", aws.ToString(g.GroupName), err)
+		}
+	}
+	return nil
+}
+
+// Live returns this fleet's instances (any fleet if empty) that EC2 reports in
+// any state but terminated. spawn list omits shutting-down instances, so
+// teardown asks EC2 directly.
+func Live(ctx context.Context, c *ec2.Client, fleet string) ([]string, error) {
+	f := []types.Filter{{Name: aws.String("instance-state-name"), Values: []string{"pending", "running", "shutting-down", "stopping", "stopped"}}}
+	if fleet != "" {
+		f = append(f, types.Filter{Name: aws.String("tag:adit:fleet"), Values: []string{fleet}})
+	} else {
+		f = append(f, types.Filter{Name: aws.String("tag-key"), Values: []string{"adit:fleet"}})
+	}
+	out, err := c.DescribeInstances(ctx, &ec2.DescribeInstancesInput{Filters: f})
+	if err != nil {
+		return nil, err
+	}
+	var live []string
+	for _, r := range out.Reservations {
+		for _, in := range r.Instances {
+			name := ""
+			for _, t := range in.Tags {
+				if aws.ToString(t.Key) == "Name" {
+					name = aws.ToString(t.Value)
+				}
+			}
+			live = append(live, fmt.Sprintf("%s %s %s %s", aws.ToString(in.InstanceId), name, in.InstanceType, in.State.Name))
+		}
+	}
+	return live, nil
 }
 
 func (s *Spec) spawn(ctx context.Context, region string, args ...string) (string, error) {
@@ -303,7 +374,11 @@ func (s *Spec) Up(ctx context.Context, ec2For EC2For) ([]Box, error) {
 			}
 		}
 		idFile := filepath.Join(tmp, fmt.Sprintf("%s-%d-%s", r.Name, i, c.AZ))
-		out, err := s.spawn(ctx, c.Region, s.LaunchArgs(r, i, c, subnet, sg, ami, idFile)...)
+		pg := ""
+		if s.ClusterPG {
+			pg = PGName(s.Name, c.AZ)
+		}
+		out, err := s.spawn(ctx, c.Region, s.launchArgs(r, i, c, subnet, sg, ami, idFile, pg)...)
 		id, _ := os.ReadFile(idFile)
 		b := Box{Name: fmt.Sprintf("adit-%s-%s-%d", s.Name, r.Name, i), Role: r.Name, InstanceID: strings.TrimSpace(string(id)), Region: c.Region, AZ: c.AZ, Spot: c.Spot}
 		return b, out, err
@@ -327,6 +402,11 @@ func (s *Spec) Up(ctx context.Context, ec2For EC2For) ([]Box, error) {
 		if err != nil {
 			s.logf("# %s: %v; next candidate", c.AZ, err)
 			continue
+		}
+		if s.ClusterPG && !s.DryRun {
+			if err := EnsurePG(ctx, e, PGName(s.Name, c.AZ), s.Name); err != nil {
+				return boxes, err
+			}
 		}
 		var placed []Box
 		ok := true

@@ -40,6 +40,9 @@ struct Args {
     attempts: u32,
     #[arg(long, default_value = "us-east-1")]
     region: String,
+    /// Seconds before an in-progress RDMA write is reported failed.
+    #[arg(long, default_value_t = 30)]
+    write_timeout_s: u64,
     /// Cap on outstanding RDMA writes (0 = one per slot). See #18.
     #[arg(long, default_value_t = 0)]
     write_inflight: usize,
@@ -57,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let chunk = a.chunk_mib << 20;
     let pool = Arc::new(Pool::new(a.slots, chunk as usize));
-    let writer = NixlWriter::new(&name, &a.backend, &pool)?;
+    let writer = NixlWriter::new(&name, &a.backend, &pool)?.with_deadline(Duration::from_secs(a.write_timeout_s));
     let crt = CrtSource::new(&CrtConfig {
         throughput_target_gbps: a.throughput_gbps,
         max_connections: a.max_connections,

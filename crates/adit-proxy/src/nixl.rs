@@ -49,6 +49,9 @@ pub struct NixlWriter {
     backend_name: String,
     _registration: RegistrationHandle,
     known: Mutex<HashSet<String>>,
+    /// A write still in progress after this long is reported failed rather than polled forever
+    /// (#18: an EFA write error left a transfer `InProgress` indefinitely).
+    deadline: Duration,
 }
 
 impl NixlWriter {
@@ -69,7 +72,14 @@ impl NixlWriter {
             backend_name: backend_name.into(),
             _registration: registration,
             known: Mutex::default(),
+            deadline: Duration::from_secs(30),
         })
+    }
+
+    /// Fail writes still in progress after `d`.
+    pub fn with_deadline(mut self, d: Duration) -> Self {
+        self.deadline = d;
+        self
     }
 
     /// This proxy's own metadata (for diagnostics; clients do not need it for push).
@@ -128,7 +138,15 @@ impl RemoteWriter for NixlWriter {
             // NIXL's progress thread drives the transfer; poll its status, yielding at first and
             // backing off to short sleeps so a long write does not pin a runtime thread.
             let mut spins = 0u32;
+            let until = tokio::time::Instant::now() + self.deadline;
             loop {
+                if tokio::time::Instant::now() >= until {
+                    return Err(WriteError::Failed(format!(
+                        "write of {} bytes to {agent} still in progress after {:?}",
+                        src.len(),
+                        self.deadline
+                    )));
+                }
                 match self.agent.get_xfer_status(&req).map_err(nixl)? {
                     XferStatus::Success => return Ok(()),
                     XferStatus::InProgress if spins < 64 => {
