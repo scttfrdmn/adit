@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+#
+# Bootstrap an adit box: EFA, NIXL (pinned, LIBFABRIC plugin), nixlbench and its etcd client,
+# Rust, and the adit workspace built against the real NIXL (never the stub).
+#
+#   sudo bash hack/install.sh proxy    # GPU-less EFA proxy (Ubuntu 24.04 arm64)
+#   sudo bash hack/install.sh client   # GPU client (DLAMI base: driver, CUDA, EFA preinstalled)
+#
+# Idempotent: each stage leaves a marker in /var/lib/adit and is skipped next time, so the same
+# script bakes an AMI and refreshes a box booted from one. Versions are pinned here and echoed to
+# /var/lib/adit/versions for the capability matrix.
+set +e
+set -uo pipefail
+echo "opts=$-"
+
+ROLE=${1-}
+[[ $ROLE == proxy || $ROLE == client ]] || { echo "usage: $0 proxy|client" >&2; exit 2; }
+NIXL_TAG=${NIXL_TAG:-v1.2.0}
+ETCD_CPP_TAG=${ETCD_CPP_TAG:-v0.15.4}
+NIXL_PREFIX=${NIXL_PREFIX:-/opt/nvidia/nvda_nixl}
+ADIT_REPO=${ADIT_REPO:-https://github.com/scttfrdmn/adit.git}
+ADIT_REF=${ADIT_REF:-main}
+ADIT_USER=${ADIT_USER:-ubuntu}
+SRC=/opt/adit-src
+STATE=/var/lib/adit
+mkdir -p "$STATE" "$SRC"
+LOG=$STATE/install.log
+exec > >(tee -a "$LOG") 2>&1
+
+log() { echo "[$(date -u +%FT%TZ)] $*"; }
+done_() { [[ -f $STATE/$1.done ]]; }
+mark() { touch "$STATE/$1.done"; }
+fail() { log "FAILED: $*"; exit 1; }
+
+arch=$(uname -m)
+log "role=$ROLE arch=$arch nixl=$NIXL_TAG prefix=$NIXL_PREFIX"
+
+if ! done_ apt; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y || fail apt-get update
+    apt-get install -y build-essential cmake meson ninja-build pkg-config git curl jq unzip \
+        libhwloc-dev hwloc libnuma-dev libaio-dev libssl-dev libcurl4-openssl-dev \
+        python3-pip python3-venv pybind11-dev libgflags-dev libgtest-dev clang libclang-dev \
+        libgrpc++-dev libprotobuf-dev protobuf-compiler-grpc libcpprest-dev etcd-server etcd-client \
+        linux-tools-common "linux-tools-$(uname -r)" numactl rdma-core ibverbs-utils \
+        || fail apt-get install
+    mark apt
+fi
+
+if ! done_ awscli; then
+    if ! command -v aws >/dev/null; then
+        a=$([[ $arch == aarch64 ]] && echo aarch64 || echo x86_64)
+        curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$a.zip" -o /tmp/awscli.zip && unzip -q -o /tmp/awscli.zip -d /tmp && /tmp/aws/install --update || fail awscli
+    fi
+    mark awscli
+fi
+
+if ! done_ efa; then
+    if [[ -x /opt/amazon/efa/bin/fi_info ]]; then
+        log "EFA already installed (DLAMI)"
+    else
+        cd /tmp && curl -fsSL https://efa-installer.amazonaws.com/aws-efa-installer-latest.tar.gz | tar xz || fail efa download
+        cd aws-efa-installer || fail efa dir
+        # The Ubuntu AWS kernel ships the efa module; build it only if it is missing.
+        kmod=""
+        modinfo efa >/dev/null 2>&1 && kmod="--skip-kmod"
+        ./efa_installer.sh -y $kmod --skip-limit-conf || fail efa_installer
+    fi
+    mark efa
+fi
+export PATH=/opt/amazon/efa/bin:$PATH
+
+CUDA=""
+if [[ $ROLE == client ]]; then
+    CUDA=$(ls -d /usr/local/cuda 2>/dev/null)
+    [[ -n $CUDA ]] || fail "no /usr/local/cuda on a client box"
+fi
+
+if ! done_ etcdcpp; then
+    cd "$SRC" && rm -rf etcd-cpp-apiv3 && git clone -q --depth 1 -b "$ETCD_CPP_TAG" https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3.git || fail etcd-cpp clone
+    cd etcd-cpp-apiv3 && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_ETCD_TESTS=OFF -DBUILD_SHARED_LIBS=ON \
+        && ninja -C build install || fail etcd-cpp build
+    ldconfig
+    mark etcdcpp
+fi
+
+if ! done_ nixl; then
+    cd "$SRC" && rm -rf nixl && git clone -q --depth 1 -b "$NIXL_TAG" https://github.com/ai-dynamo/nixl.git || fail nixl clone
+    cd nixl
+    opts=(-Dlibfabric_path=/opt/amazon/efa --buildtype=release --prefix="$NIXL_PREFIX")
+    [[ -n $CUDA ]] && opts+=(-Dcudapath_inc="$CUDA/include" -Dcudapath_lib="$CUDA/lib64")
+    meson setup build "${opts[@]}" || fail nixl meson
+    ninja -C build install || fail nixl build
+    echo "$NIXL_PREFIX/lib/$arch-linux-gnu" >/etc/ld.so.conf.d/nixl.conf
+    echo "$NIXL_PREFIX/lib/$arch-linux-gnu/plugins" >>/etc/ld.so.conf.d/nixl.conf
+    echo "$NIXL_PREFIX/lib" >>/etc/ld.so.conf.d/nixl.conf
+    ldconfig
+    cd benchmark/nixlbench || fail nixlbench dir
+    bopts=(-Dnixl_path="$NIXL_PREFIX" -Detcd_inc_path=/usr/local/include -Detcd_lib_path=/usr/local/lib --prefix="$NIXL_PREFIX")
+    [[ -n $CUDA ]] && bopts+=(-Dcudapath_inc="$CUDA/include" -Dcudapath_lib="$CUDA/lib64")
+    meson setup build "${bopts[@]}" || fail nixlbench meson
+    ninja -C build install || fail nixlbench build
+    ln -sf "$NIXL_PREFIX/bin/nixlbench" /usr/local/bin/nixlbench
+    mark nixl
+fi
+plugins=$(find "$NIXL_PREFIX" -name 'libplugin_LIBFABRIC*.so' | head -1)
+[[ -n $plugins ]] || fail "NIXL LIBFABRIC plugin not built"
+
+if ! done_ rust; then
+    sudo -u "$ADIT_USER" -H bash -c 'curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal' || fail rustup
+    mark rust
+fi
+
+if ! done_ bgrun; then
+    cat >/usr/local/bin/bgrun <<'B'
+#!/usr/bin/env bash
+# bgrun [-o OUT] CMD...: run CMD detached, output to OUT (default /tmp/bgrun.out); poll with tail.
+out=/tmp/bgrun.out
+if [[ ${1-} == -o ]]; then out=$2; shift 2; fi
+: >"$out"
+nohup "$@" >>"$out" 2>&1 &
+echo "bgrun pid=$! out=$out"
+B
+    chmod +x /usr/local/bin/bgrun
+    mark bgrun
+fi
+
+# The adit workspace: always refreshed (code changes between runs; the toolchain does not).
+log "building adit $ADIT_REF"
+if [[ ! -d $SRC/adit/.git ]]; then
+    git clone -q "$ADIT_REPO" "$SRC/adit" || fail adit clone
+fi
+chown -R "$ADIT_USER" "$SRC/adit"
+sudo -u "$ADIT_USER" -H bash -c "cd $SRC/adit && git fetch -q origin && git checkout -q $ADIT_REF && git reset -q --hard origin/$ADIT_REF 2>/dev/null || git reset -q --hard $ADIT_REF" || fail adit checkout
+pkgs="-p adit-proxy"
+[[ $ROLE == client ]] && pkgs="-p adit-client -p adit-proxy"
+sudo -u "$ADIT_USER" -H bash -c "cd $SRC/adit && NIXL_PREFIX=$NIXL_PREFIX NIXL_NO_STUBS_FALLBACK=1 ~/.cargo/bin/cargo build --release $pkgs" || fail "adit build (real NIXL)"
+for b in adit-proxy adit-nixl-probe-init adit-get adit-load adit-nixl-probe-target; do
+    [[ -x $SRC/adit/target/release/$b ]] && ln -sf "$SRC/adit/target/release/$b" /usr/local/bin/$b
+done
+
+{
+    echo "role=$ROLE"
+    echo "arch=$arch"
+    echo "kernel=$(uname -r)"
+    echo "nixl=$NIXL_TAG"
+    echo "etcd_cpp=$ETCD_CPP_TAG"
+    echo "efa_installer=$(cat /opt/amazon/efa_installed_packages 2>/dev/null | grep -m1 -o 'EFA installer version: [0-9.]*' | awk '{print $4}')"
+    echo "libfabric=$(fi_info --version 2>/dev/null | awk '/libfabric:/{print $2}')"
+    echo "driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)"
+    echo "cuda=$(nvcc --version 2>/dev/null | awk -F'release ' '/release/{print $2}' | cut -d, -f1)"
+    echo "adit=$(cd $SRC/adit && git rev-parse --short HEAD)"
+} >"$STATE/versions"
+cat "$STATE/versions"
+log "install complete"
