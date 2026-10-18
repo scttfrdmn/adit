@@ -18,6 +18,11 @@ ROLE=${1-}
 [[ $ROLE == proxy || $ROLE == client ]] || { echo "usage: $0 proxy|client" >&2; exit 2; }
 NIXL_TAG=${NIXL_TAG:-v1.2.0}
 ETCD_CPP_TAG=${ETCD_CPP_TAG:-v0.15.4}
+# NIXL needs absl/log, newer than Ubuntu 24.04's Abseil; gRPC (for etcd-cpp, for nixlbench) must
+# then be built against the same Abseil, or two Abseils meet at runtime. Same recipe and tags as
+# NIXL's own contrib/Dockerfile at the pinned tag.
+ABSL_TAG=${ABSL_TAG:-lts_2025_08_14}
+GRPC_TAG=${GRPC_TAG:-v1.73.0}
 NIXL_PREFIX=${NIXL_PREFIX:-/opt/nvidia/nvda_nixl}
 ADIT_REPO=${ADIT_REPO:-https://github.com/scttfrdmn/adit.git}
 ADIT_REF=${ADIT_REF:-main}
@@ -42,7 +47,7 @@ if ! done_ apt; then
     apt-get install -y build-essential cmake meson ninja-build pkg-config git curl jq unzip \
         libhwloc-dev hwloc libnuma-dev libaio-dev libssl-dev libcurl4-openssl-dev \
         python3-pip python3-venv pybind11-dev libgflags-dev libgtest-dev clang libclang-dev \
-        libgrpc++-dev libprotobuf-dev protobuf-compiler-grpc libcpprest-dev etcd-server etcd-client \
+        libprotobuf-dev libcpprest-dev etcd-server etcd-client autotools-dev automake libtool zlib1g-dev uuid-dev \
         linux-tools-common "linux-tools-$(uname -r)" numactl rdma-core ibverbs-utils \
         || fail apt-get install
     mark apt
@@ -77,10 +82,31 @@ if [[ $ROLE == client ]]; then
     [[ -n $CUDA ]] || fail "no /usr/local/cuda on a client box"
 fi
 
+if ! done_ absl; then
+    # A distro Abseil left installed makes NIXL's meson refuse (version mix); remove it first.
+    apt-get remove -y --purge libabsl-dev libgrpc++-dev protobuf-compiler-grpc 2>/dev/null
+    cd "$SRC" && rm -rf abseil-cpp && git clone -q --depth 1 -b "$ABSL_TAG" https://github.com/abseil/abseil-cpp.git || fail absl clone
+    cmake -S abseil-cpp -B abseil-cpp/build -G Ninja -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=ON -DABSL_PROPAGATE_CXX_STD=ON -DABSL_ENABLE_INSTALL=ON && ninja -C abseil-cpp/build install || fail absl build
+    ldconfig
+    mark absl
+fi
+
+if ! done_ grpc; then
+    cd "$SRC" && rm -rf grpc && git clone -q --recurse-submodules -b "$GRPC_TAG" --depth 1 --shallow-submodules https://github.com/grpc/grpc || fail grpc clone
+    cmake -S grpc -B grpc/cmake/build -G Ninja -DgRPC_INSTALL=ON -DgRPC_BUILD_TESTS=OFF -DBUILD_SHARED_LIBS=ON \
+        -DCMAKE_CXX_STANDARD=17 -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_PREFIX_PATH=/usr/local \
+        -Dabsl_DIR=/usr/local/lib/cmake/absl -DgRPC_SSL_PROVIDER=package -DgRPC_ABSL_PROVIDER=package \
+        -DgRPC_PROTOBUF_PROVIDER=module -DgRPC_ZLIB_PROVIDER=package && ninja -C grpc/cmake/build install || fail grpc build
+    ldconfig
+    mark grpc
+fi
+
 if ! done_ etcdcpp; then
     cd "$SRC" && rm -rf etcd-cpp-apiv3 && git clone -q --depth 1 -b "$ETCD_CPP_TAG" https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3.git || fail etcd-cpp clone
-    cd etcd-cpp-apiv3 && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_ETCD_TESTS=OFF -DBUILD_SHARED_LIBS=ON \
-        && ninja -C build install || fail etcd-cpp build
+    cd etcd-cpp-apiv3 && sed -i '/^find_dependency(cpprestsdk)$/d' etcd-cpp-api-config.in.cmake
+    cmake -B build -G Ninja -DBUILD_ETCD_CORE_ONLY=ON -DCMAKE_BUILD_TYPE=Release -DETCD_CMAKE_CXX_STANDARD=17 \
+        -DCMAKE_PREFIX_PATH=/usr/local -DBUILD_ETCD_TESTS=OFF && ninja -C build install || fail etcd-cpp build
     ldconfig
     mark etcdcpp
 fi
@@ -88,7 +114,8 @@ fi
 if ! done_ nixl; then
     cd "$SRC" && rm -rf nixl && git clone -q --depth 1 -b "$NIXL_TAG" https://github.com/ai-dynamo/nixl.git || fail nixl clone
     cd nixl
-    opts=(-Dlibfabric_path=/opt/amazon/efa --buildtype=release --prefix="$NIXL_PREFIX")
+    opts=(-Dlibfabric_path=/opt/amazon/efa -Detcd_inc_path=/usr/local/include -Detcd_lib_path=/usr/local/lib
+        -Dbuild_tests=false -Dbuild_examples=false --buildtype=release --prefix="$NIXL_PREFIX")
     [[ -n $CUDA ]] && opts+=(-Dcudapath_inc="$CUDA/include" -Dcudapath_lib="$CUDA/lib64")
     meson setup build "${opts[@]}" || fail nixl meson
     ninja -C build install || fail nixl build
@@ -146,6 +173,8 @@ done
     echo "kernel=$(uname -r)"
     echo "nixl=$NIXL_TAG"
     echo "etcd_cpp=$ETCD_CPP_TAG"
+    echo "absl=$ABSL_TAG"
+    echo "grpc=$GRPC_TAG"
     echo "efa_installer=$(cat /opt/amazon/efa_installed_packages 2>/dev/null | grep -m1 -o 'EFA installer version: [0-9.]*' | awk '{print $4}')"
     echo "libfabric=$(fi_info --version 2>/dev/null | awk '/libfabric:/{print $2}')"
     echo "driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)"
