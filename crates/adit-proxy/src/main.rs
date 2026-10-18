@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: Apache-2.0
+use std::sync::Arc;
+use std::time::Duration;
+
+use adit_fetch::Retrying;
+use adit_fetch::crt::{CrtConfig, CrtSource};
+use adit_proxy::http::{App, router};
+use adit_proxy::metrics::{ConfigInfo, Metrics};
+use adit_proxy::nixl::NixlWriter;
+use adit_proxy::pool::Pool;
+use clap::Parser;
+
+/// adit proxy: S3 ranges into a client's GPU memory over NIXL.
+#[derive(Parser, Debug)]
+#[command(version)]
+struct Args {
+    /// HTTP control endpoint.
+    #[arg(long, default_value = "0.0.0.0:8480")]
+    listen: String,
+    /// NIXL agent name; defaults to the hostname.
+    #[arg(long)]
+    agent_name: Option<String>,
+    /// NIXL backend plugin.
+    #[arg(long, default_value = "LIBFABRIC")]
+    backend: String,
+    /// Default chunk (one ranged GET, one RDMA write), MiB.
+    #[arg(long, default_value_t = 8)]
+    chunk_mib: u64,
+    /// Receive slots = maximum chunks in flight per proxy.
+    #[arg(long, default_value_t = 64)]
+    slots: usize,
+    /// CRT throughput target: set to the proxy's ENA bandwidth.
+    #[arg(long, default_value_t = 100.0)]
+    throughput_gbps: f64,
+    /// Hard cap on CRT connections.
+    #[arg(long)]
+    max_connections: Option<u32>,
+    /// Attempts per ranged GET on 5xx/throttle/transport errors.
+    #[arg(long, default_value_t = 4)]
+    attempts: u32,
+    #[arg(long, default_value = "us-east-1")]
+    region: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).init();
+    let a = Args::parse();
+    if nixl_sys::is_stub() {
+        return Err("built against the NIXL stub API; rebuild with NIXL_PREFIX set and NIXL_NO_STUBS_FALLBACK=1".into());
+    }
+    let name = a.agent_name.clone().unwrap_or_else(|| {
+        std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()).unwrap_or_else(|_| "adit-proxy".into())
+    });
+    let chunk = a.chunk_mib << 20;
+    let pool = Arc::new(Pool::new(a.slots, chunk as usize));
+    let writer = NixlWriter::new(&name, &a.backend, &pool)?;
+    let crt = CrtSource::new(&CrtConfig {
+        throughput_target_gbps: a.throughput_gbps,
+        max_connections: a.max_connections,
+        region: a.region.clone(),
+        ..CrtConfig::default()
+    })?;
+    let app = Arc::new(App {
+        source: Arc::new(Retrying::new(crt, a.attempts, Duration::from_millis(50))),
+        writer: Arc::new(writer),
+        pool: pool.clone(),
+        metrics: Metrics::default(),
+        config: ConfigInfo {
+            backend: a.backend.clone(),
+            chunk_bytes: chunk,
+            slots: a.slots as u64,
+            throughput_target_gbps: a.throughput_gbps,
+            max_connections: a.max_connections.unwrap_or(0) as u64,
+            stub: false,
+        },
+    });
+    let listener = tokio::net::TcpListener::bind(&a.listen).await?;
+    tracing::info!(listen = a.listen, agent = name, backend = a.backend, chunk, slots = a.slots, "adit-proxy serving");
+    axum::serve(listener, router(app)).await?;
+    Ok(())
+}

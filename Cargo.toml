@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: Apache-2.0
+[workspace]
+resolver = "3"
+members = ["crates/adit-proto", "crates/adit-fetch", "crates/adit-proxy"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/scttfrdmn/adit"
+publish = false
+
+[workspace.dependencies]
+adit-proto = { path = "crates/adit-proto" }
+adit-fetch = { path = "crates/adit-fetch" }
+adit-client = { path = "crates/adit-client" }
+nixl-sys = "=1.2.0"
+mountpoint-s3-crt = "=0.16.2"
+cudarc = { version = "=0.19.10", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-13000"] }
+pyo3 = { version = "=0.30.1", features = ["extension-module", "abi3-py310"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
+axum = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+futures = "0.3"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+
+[profile.release]
+debug = 1
