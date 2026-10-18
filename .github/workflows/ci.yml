@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Branch CI is the shared gate: the one definition of "does this commit pass".
+  gate:
+    uses: ./.github/workflows/gate.yml
