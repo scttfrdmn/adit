@@ -63,6 +63,20 @@ pub async fn run<S: RangeSource + ?Sized, W: RemoteWriter + ?Sized>(
     pool: &Pool,
     m: &Metrics,
 ) -> Outcome {
+    run_bounded(t, src, writer, pool, m, None).await
+}
+
+/// As [`run`], with at most `write_inflight` RDMA writes outstanding at once (fetches still use
+/// every slot). NIXL write throughput falls as outstanding writes grow (#18), so the two
+/// concurrencies are separate knobs.
+pub async fn run_bounded<S: RangeSource + ?Sized, W: RemoteWriter + ?Sized>(
+    t: &Transfer,
+    src: &S,
+    writer: &W,
+    pool: &Pool,
+    m: &Metrics,
+    write_inflight: Option<&tokio::sync::Semaphore>,
+) -> Outcome {
     let chunk = t.chunk.min(pool.slot_size() as u64);
     let plan = chunks(t.range.clone(), chunk);
     let results = futures::stream::iter(plan)
@@ -82,6 +96,10 @@ pub async fn run<S: RangeSource + ?Sized, W: RemoteWriter + ?Sized>(
             m.bytes_fetched.fetch_add(st.bytes, Relaxed);
             let off = t.dest_offset + (c.offset - t.range.start);
             let notif = Notif { req: t.req, offset: off, len: c.len }.encode();
+            let _permit = match write_inflight {
+                Some(sem) => Some(sem.acquire().await.expect("write semaphore closed")),
+                None => None,
+            };
             let t1 = Instant::now();
             let wrote = writer.write(&slot[..len], &t.agent, t.dest.addr + off, t.dest.dev, notif).await;
             m.write_ns.fetch_add(t1.elapsed().as_nanos() as u64, Relaxed);

@@ -29,6 +29,8 @@ pub struct App {
     pub pool: Arc<Pool>,
     pub metrics: Metrics,
     pub config: ConfigInfo,
+    /// Cap on outstanding RDMA writes across all transfers; `None` = one per slot.
+    pub write_inflight: Option<tokio::sync::Semaphore>,
 }
 
 pub fn router(app: Arc<App>) -> Router {
@@ -93,7 +95,15 @@ async fn transfer(State(app): State<Arc<App>>, Path(path): Path<String>, h: Head
         app.metrics.requests_failed.fetch_add(1, Relaxed);
         return reply(StatusCode::PRECONDITION_REQUIRED, &[], format!("agent {:?} not registered", t.agent));
     }
-    let out = pipeline::run(&t, app.source.as_ref(), app.writer.as_ref(), &app.pool, &app.metrics).await;
+    let out = pipeline::run_bounded(
+        &t,
+        app.source.as_ref(),
+        app.writer.as_ref(),
+        &app.pool,
+        &app.metrics,
+        app.write_inflight.as_ref(),
+    )
+    .await;
     let mut hs = vec![
         (proto::H_BYTES_WRITTEN, out.bytes_written.to_string()),
         (proto::H_S3_REQUESTS, out.s3_requests.to_string()),

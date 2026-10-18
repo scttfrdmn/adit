@@ -36,6 +36,7 @@ async fn proxy(lb: &Arc<Loopback>, attempts: u32, slots: usize) -> String {
         source: Arc::new(src),
         writer: Arc::new(lb.clone()),
         pool: Arc::new(Pool::new(slots, MIB as usize)),
+        write_inflight: None,
         metrics: Metrics::default(),
         config: ConfigInfo {
             backend: "loopback".into(),
@@ -43,6 +44,7 @@ async fn proxy(lb: &Arc<Loopback>, attempts: u32, slots: usize) -> String {
             slots: slots as u64,
             throughput_target_gbps: 10.0,
             max_connections: 0,
+            write_inflight: 0,
             stub: true,
         },
     });

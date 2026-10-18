@@ -40,6 +40,9 @@ struct Args {
     attempts: u32,
     #[arg(long, default_value = "us-east-1")]
     region: String,
+    /// Cap on outstanding RDMA writes (0 = one per slot). See #18.
+    #[arg(long, default_value_t = 0)]
+    write_inflight: usize,
 }
 
 #[tokio::main]
@@ -72,8 +75,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             slots: a.slots as u64,
             throughput_target_gbps: a.throughput_gbps,
             max_connections: a.max_connections.unwrap_or(0) as u64,
+            write_inflight: a.write_inflight as u64,
             stub: false,
         },
+        write_inflight: (a.write_inflight > 0).then(|| tokio::sync::Semaphore::new(a.write_inflight)),
     });
     let listener = tokio::net::TcpListener::bind(&a.listen).await?;
     tracing::info!(listen = a.listen, agent = name, backend = a.backend, chunk, slots = a.slots, "adit-proxy serving");
