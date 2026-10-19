@@ -5,6 +5,8 @@ package fleet
 import (
 	"strings"
 	"testing"
+
+	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 )
 
 func TestParseCandidates(t *testing.T) {
@@ -40,5 +42,25 @@ func TestCapacityErrorsAreRecognised(t *testing.T) {
 	}
 	if isCapacity("UnauthorizedOperation") {
 		t.Fatal("auth error treated as capacity")
+	}
+}
+
+func TestEFAShortfall(t *testing.T) {
+	if efaShortfall(2, 2) != "" || efaShortfall(16, 16) != "" {
+		t.Fatal("full set reported short")
+	}
+	if got := efaShortfall(1, 16); got != "1 of 16 EFA interfaces" {
+		t.Fatalf("got %q", got)
+	}
+	if efaShortfall(0, 0) == "" {
+		t.Fatal("type without EFA accepted")
+	}
+}
+
+func TestEFACountIncludesEFAOnly(t *testing.T) {
+	s := func(v string) *string { return &v }
+	nis := []types.InstanceNetworkInterface{{InterfaceType: s("efa")}, {InterfaceType: s("efa-only")}, {InterfaceType: s("interface")}}
+	if n := efaCount(nis); n != 2 {
+		t.Fatalf("got %d", n)
 	}
 }

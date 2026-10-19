@@ -196,6 +196,62 @@ async fn striped_object_out_of_order_is_byte_identical() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn object_spread_over_two_destinations_is_byte_identical() {
+    // G2's multi-GPU layout: one agent, two registered destinations (two GPUs here stood in for by
+    // two halves of the loopback target), each half of the object striped over two proxies into
+    // its own destination at its own offset.
+    let half = 4 * MIB as usize;
+    let n = 2 * half - 999;
+    let s3 = MockS3::start().await;
+    let lb = Loopback::new();
+    let (target, rx) = lb.target("gpu0", 2 * half, BASE);
+    let proxies: Vec<Proxy> = (0..2).map(|_| Proxy::start(&lb, 3, 4)).collect();
+    let dests = vec![
+        Dest { addr: BASE, len: half as u64, dev: 0 },
+        Dest { addr: BASE + half as u64, len: half as u64, dev: 1 },
+    ];
+    let client = Client::with_dests(
+        Config {
+            agent: "gpu0".into(),
+            proxies: proxies.iter().map(|p| p.url.clone()).collect(),
+            chunk: MIB,
+            stripe: true,
+            notif_grace: Duration::from_millis(500),
+            timeout: Duration::from_secs(30),
+            pump_idle: Duration::from_micros(50),
+        },
+        dests,
+        Arc::new(ChannelSource(Mutex::new(rx))),
+    )
+    .unwrap();
+    client.register(&Loopback::metadata("gpu0")).await.unwrap();
+    let data = bytes(n, 5);
+    s3.put("bench/t1", data.clone());
+    let m = manifest("bench/t1", &data, MIB);
+    let url = s3.url("bench/t1");
+    // Both halves at offset 0: offsets are relative to each request's destination.
+    let (a, b) = futures::join!(
+        client.get_into(1, "bench/t1", &url, half as u64..n as u64, 0),
+        client.get_into(0, "bench/t1", &url, 0..half as u64, 0),
+    );
+    assert_eq!(a.unwrap().bytes, (n - half) as u64);
+    assert_eq!(b.unwrap().bytes, half as u64);
+    let mem = target.mem.lock().unwrap();
+    let mut parts = sha256_parts_cpu(&mem[..half], MIB as usize);
+    parts.extend(sha256_parts_cpu(&mem[half..n], MIB as usize));
+    assert!(m.check(&parts).matches, "segment digests do not compose to the manifest");
+    drop(mem);
+    assert!(matches!(
+        futures::executor::block_on(client.get_into(2, "bench/t1", &url, 0..1, 0)),
+        Err(GetError::Invalid(_))
+    ));
+    assert!(matches!(
+        futures::executor::block_on(client.get_into(1, "bench/t1", &url, 0..half as u64 + 1, 0)),
+        Err(GetError::Invalid(_))
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn proxy_killed_mid_transfer_is_reported_partial() {
     let n = 12 * MIB as usize;
     let mut r = rig(n, 2, true, 3).await;

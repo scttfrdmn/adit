@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Requests: one object (or a range of one) into the registered destination, from one proxy or
-//! striped across several.
+//! Requests: one object (or a range of one) into a registered destination, from one proxy or
+//! striped across several. A client may hold several destinations (one per GPU, G2); each request
+//! lands in one of them.
 //!
 //! **Failure semantics.** A get returns `Ok` only when (a) every proxy involved answered `200`
 //! and (b) notifications cover exactly the requested destination bytes, with no overlap. Anything
@@ -67,7 +68,7 @@ pub enum GetError {
 pub struct Client {
     cfg: Config,
     http: reqwest::Client,
-    dest: Dest,
+    dests: Vec<Dest>,
     tracker: Arc<Tracker>,
     next_req: AtomicU64,
     pump: tokio::task::JoinHandle<()>,
@@ -89,8 +90,14 @@ struct StripeAnswer {
 impl Client {
     /// `dest` is the registered destination region; `notifs` delivers its notifications.
     pub fn new(cfg: Config, dest: Dest, notifs: Arc<dyn NotifSource>) -> Result<Self, GetError> {
-        if cfg.proxies.is_empty() || cfg.chunk == 0 {
-            return Err(GetError::Invalid("need at least one proxy and a positive chunk".into()));
+        Self::with_dests(cfg, vec![dest], notifs)
+    }
+
+    /// As [`Client::new`] with several registered destinations, addressed by index in
+    /// [`Client::get_into`]. Notification offsets are relative to the request's destination.
+    pub fn with_dests(cfg: Config, dests: Vec<Dest>, notifs: Arc<dyn NotifSource>) -> Result<Self, GetError> {
+        if cfg.proxies.is_empty() || cfg.chunk == 0 || dests.is_empty() {
+            return Err(GetError::Invalid("need at least one proxy, one destination and a positive chunk".into()));
         }
         let http =
             reqwest::Client::builder().timeout(cfg.timeout).build().map_err(|e| GetError::Invalid(e.to_string()))?;
@@ -101,7 +108,7 @@ impl Client {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_micros() as u64)
             .unwrap_or(1);
-        Ok(Self { cfg, http, dest, tracker, next_req: AtomicU64::new(seed), pump })
+        Ok(Self { cfg, http, dests, tracker, next_req: AtomicU64::new(seed), pump })
     }
 
     pub fn tracker(&self) -> &Tracker {
@@ -110,6 +117,10 @@ impl Client {
 
     pub fn config(&self) -> &Config {
         &self.cfg
+    }
+
+    pub fn dests(&self) -> &[Dest] {
+        &self.dests
     }
 
     /// Send our agent metadata to every proxy.
@@ -130,8 +141,10 @@ impl Client {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn one(
         &self,
+        dest: &Dest,
         proxy: &str,
         path: &str,
         url: &str,
@@ -144,7 +157,7 @@ impl Client {
             .get(format!("{proxy}/{path}"))
             .header(proto::H_PRESIGNED_URL, url)
             .header(proto::H_AGENT, &self.cfg.agent)
-            .header(proto::H_DEST, self.dest.to_string())
+            .header(proto::H_DEST, dest.to_string())
             .header(proto::H_DEST_OFFSET, dest_offset.to_string())
             .header(proto::H_RANGE, proto::format_range(&range))
             .header(proto::H_REQUEST_ID, req.to_string())
@@ -166,14 +179,24 @@ impl Client {
     }
 
     /// Fetch object bytes `range` (via presigned `url`; `path` is `bucket/key`, for logs and
-    /// proxy routing) into the destination at `dest_offset`.
+    /// proxy routing) into the first destination at `dest_offset`.
     pub async fn get(&self, path: &str, url: &str, range: Range<u64>, dest_offset: u64) -> Result<Report, GetError> {
+        self.get_into(0, path, url, range, dest_offset).await
+    }
+
+    /// As [`Client::get`], into destination `dest` (an index into [`Client::dests`]).
+    pub async fn get_into(
+        &self,
+        dest: usize,
+        path: &str,
+        url: &str,
+        range: Range<u64>,
+        dest_offset: u64,
+    ) -> Result<Report, GetError> {
+        let d = self.dests.get(dest).ok_or_else(|| GetError::Invalid(format!("no destination {dest}")))?;
         let want = range.end.checked_sub(range.start).ok_or_else(|| GetError::Invalid("inverted range".into()))?;
-        if dest_offset.checked_add(want).is_none_or(|e| e > self.dest.len) {
-            return Err(GetError::Invalid(format!(
-                "{want} bytes at offset {dest_offset} overrun dest of {}",
-                self.dest.len
-            )));
+        if dest_offset.checked_add(want).is_none_or(|e| e > d.len) {
+            return Err(GetError::Invalid(format!("{want} bytes at offset {dest_offset} overrun dest of {}", d.len)));
         }
         let start = Instant::now();
         let req = self.next_req.fetch_add(1, Relaxed);
@@ -184,7 +207,7 @@ impl Client {
         let stripes = if self.cfg.stripe { stripe(range.clone(), n, self.cfg.chunk) } else { vec![range.clone()] };
         let futs = stripes.iter().enumerate().map(|(i, s)| {
             let proxy = &self.cfg.proxies[(req as usize + i) % n];
-            self.one(proxy, path, url, s.clone(), dest_offset + (s.start - range.start), req)
+            self.one(d, proxy, path, url, s.clone(), dest_offset + (s.start - range.start), req)
         });
         let answers = futures::future::join_all(futs).await;
         let all_ok = answers.iter().all(|a| a.ok);

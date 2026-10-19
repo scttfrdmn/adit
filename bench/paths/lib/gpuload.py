@@ -9,6 +9,9 @@ Modes:
 - `cufile`: KvikIO CuFile over a filesystem path. In compatibility mode (POSIX read + bounce) it is
   path C on a FUSE mount; with GDS it is path D on FSx for Lustre.
 
+With `--devices 0,1,...` objects go round-robin across the listed GPUs (G2's 8-GPU client), each
+GPU with its own `--buffer-gib` per wave, and each object is checked on the GPU it landed on.
+
 Every run opens one `adit.Window` (the same counters the Rust runners use) around the reads only.
 Every object is then checked on the GPU (`adit.Gpu.sha256_parts` + `adit.check` against the
 manifest), and one row in `bench/schema/paths.csv` order is appended.
@@ -45,12 +48,13 @@ def main():
     ap.add_argument("--dir", help="file root: object key K is DIR/K (cufile)")
     ap.add_argument("--region", default="us-east-1")
     ap.add_argument("--device", type=int, default=0)
+    ap.add_argument("--devices", default="", help="comma-separated GPUs (overrides --device); objects round-robin")
     ap.add_argument("--threads", type=int, default=0, help="KvikIO thread pool (0 = library default)")
     ap.add_argument("--task-size-mib", type=int, default=0, help="KvikIO task size (0 = default)")
     ap.add_argument("--compat", choices=["on", "off", "auto"], default="auto", help="KvikIO compat mode")
     ap.add_argument("--concurrency", type=int, default=1, help="objects in flight")
     ap.add_argument("--runs", type=int, default=1)
-    ap.add_argument("--buffer-gib", type=int, default=80, help="GPU memory per wave; objects are loaded in waves that fit")
+    ap.add_argument("--buffer-gib", type=int, default=80, help="GPU memory per GPU per wave; objects are loaded in waves that fit")
     ap.add_argument("--schema", default="bench/schema/paths.csv")
     ap.add_argument("--meta", action="append", default=[], help="k=v fixed columns")
     ap.add_argument("--out")
@@ -68,8 +72,9 @@ def main():
     import adit  # adit-py: the GPU oracle and counters
     from concurrent.futures import ThreadPoolExecutor
 
-    cp.cuda.Device(a.device).use()
-    gpu = adit.Gpu(a.device)
+    devices = [int(d) for d in a.devices.split(",") if d.strip()] or [a.device]
+    cp.cuda.Device(devices[0]).use()
+    gpus = {d: adit.Gpu(d) for d in devices}
     objs = load_lines(a.plan or a.manifest)
     cols = schema(a.schema)
 
@@ -98,7 +103,7 @@ def main():
             r = client.get_object(o["bucket"], o["key"])
             host = torch.frombuffer(bytearray(r.read()), dtype=torch.uint8)
             # Copy host -> the oracle's device buffer directly (no second device allocation).
-            torch.as_tensor(buf, device=f"cuda:{a.device}").copy_(host)
+            torch.as_tensor(buf, device=f"cuda:{buf.device.id}").copy_(host)
             return host.numel()
 
     out = open(a.out, "a", newline="") if a.out else None
@@ -106,18 +111,22 @@ def main():
         out.write(",".join(cols) + "\n")
     print(",".join(cols))
     bad_any = False
-    # Pack objects into waves that fit the GPU budget; each wave is verified and freed before the
-    # next, and only the reads are inside the counter window.
+    # Pack objects into waves that fit the GPU budget, round-robin over the GPUs; each wave is
+    # verified and freed before the next, and only the reads are inside the counter window. A wave
+    # entry is (object, device).
     cap = a.buffer_gib << 30
-    waves, cur, used = [], [], 0
+    waves, cur, used, k = [], [], {d: 0 for d in devices}, 0
     for o in objs:
         if o["size"] > cap:
             raise SystemExit(f"{o['key']} ({o['size']} bytes) exceeds --buffer-gib")
-        if used + o["size"] > cap:
+        d = devices[k % len(devices)]
+        if used[d] + o["size"] > cap:
             waves.append(cur)
-            cur, used = [], 0
-        cur.append(o)
-        used += o["size"]
+            cur, used, k = [], {x: 0 for x in devices}, 0
+            d = devices[0]
+        cur.append((o, d))
+        used[d] += o["size"]
+        k += 1
     if cur:
         waves.append(cur)
 
@@ -129,22 +138,27 @@ def main():
     for run in range(1, a.runs + 1):
         secs, m, notes, bad = 0.0, {}, [], 0
         for wave in waves:
-            bufs = [cp.zeros(o["size"], dtype=cp.uint8) for o in wave]
-            cp.cuda.Device(a.device).synchronize()
+            bufs = []
+            for o, d in wave:
+                with cp.cuda.Device(d):
+                    bufs.append(cp.zeros(o["size"], dtype=cp.uint8))
+            for d in devices:
+                cp.cuda.Device(d).synchronize()
             w = adit.Window("")
             t0 = time.monotonic()
             with ThreadPoolExecutor(max_workers=a.concurrency) as ex:
-                got = list(ex.map(lambda ob: read(ob[0], ob[1]), zip(wave, bufs)))
-            cp.cuda.Device(a.device).synchronize()
+                got = list(ex.map(lambda ob: read(ob[0][0], ob[1]), zip(wave, bufs)))
+            for d in devices:
+                cp.cuda.Device(d).synchronize()
             secs += time.monotonic() - t0
             merge(m, w.stop())
-            for o, b, n in zip(wave, bufs, got):
+            for (o, d), b, n in zip(wave, bufs, got):
                 if n != o["size"]:
                     notes.append(f"{o['key']}: read {n} of {o['size']}")
                     bad += 1
                     continue
                 ok, comp, badparts = adit.check(json.dumps({k: o[k] for k in o if k != "url"}),
-                                                gpu.sha256_parts(b.data.ptr, o["size"], o["part_size"]))
+                                                gpus[d].sha256_parts(b.data.ptr, o["size"], o["part_size"]))
                 if not ok:
                     bad += 1
                     notes.append(f"MISMATCH {o['key']} parts {badparts[:4]}")
@@ -153,7 +167,9 @@ def main():
             b = None
             bufs = None
             got = None
-            cp.get_default_memory_pool().free_all_blocks()
+            for d in devices:
+                with cp.cuda.Device(d):
+                    cp.get_default_memory_pool().free_all_blocks()
         bad_any |= bad > 0
         total = sum(o["size"] for o in objs)
         row = {c: "" for c in cols}
@@ -172,7 +188,8 @@ def main():
             "efa_rx_bytes": m["efa_rx_bytes"] if m["efa_rx_bytes"] is not None else 0,
             "oracle": "MISMATCH" if bad else "ok",
             "config": f"mode={a.mode};compat={a.compat};threads={a.threads or 'default'};"
-                      f"task_size_mib={a.task_size_mib or 'default'};concurrency={a.concurrency};waves={len(waves)}",
+                      f"task_size_mib={a.task_size_mib or 'default'};concurrency={a.concurrency};waves={len(waves)};"
+                      f"devices={' '.join(map(str, devices))}",
             "notes": "; ".join(notes + ([m["perf_note"]] if m["perf_note"] else [])),
         })
         line = ",".join(f'"{v}"' if "," in str(v) else str(v) for v in (row[c] for c in cols))

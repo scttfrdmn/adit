@@ -1,38 +1,59 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# Interleaved comparison on one workload (pre-G2, #45): arms run in a rotated order every cycle so
-# time-of-session effects (S3 warm-up on a key read repeatedly) spread evenly across arms instead
-# of confounding them. Runs on the GPU client; proxies must already be serving.
+# Interleaved comparison on one workload (pre-G2 #45, G2 #48): arms run in a rotated order every
+# cycle so time-of-session effects (S3 warm-up on a key read repeatedly) spread evenly across arms
+# instead of confounding them. Runs on the GPU client; proxies must already be serving.
 #
-#   PLAN=... PROXY1=http://ip:8480 PROXY2=http://ip:8480 CYCLES=6 bash bench/paths/interleave.sh T1
+#   PLAN=... PROXIES=http://a:8480,http://b:8480,... CYCLES=3 ARMS="E8 E4 E2 E1" bash bench/paths/interleave.sh T2
+#   PLAN=... PROXY1=http://a:8480 PROXY2=http://b:8480 CYCLES=6 bash bench/paths/interleave.sh T1
 #
-# Arms (ARMS to override): B512 B1024 (KvikIO RemoteFile, 512/1024 threads, 64 MiB tasks),
-# E1 (adit, PROXY1 only), E2 (adit, PROXY1+PROXY2, stripe). Each arm = one read of the workload,
-# one results row, the same oracle and counter window as the per-path runners.
+# Arms (ARMS to override; default B512 B1024 E1 E2):
+#   B<threads>  KvikIO RemoteFile, <threads> threads, 64 MiB tasks, objects round-robin over DEVICES
+#   E<n>        adit through the first n of PROXIES (PROXY1,PROXY2 when PROXIES is unset); with
+#               STRIPE=1 (default) and n > 1 each object is striped across the n proxies
+# Each arm = one read of the workload, one results row, the same oracle and counter window as the
+# per-path runners.
+#
+# Knobs: DEVICES (GPUs, default 0), BUF_GIB (per GPU, default 65), CHUNK_MIB (E, default 8), B_CONCURRENCY (objects in flight
+# for B, default 1), E_CONCURRENCY (default 1), STRIPE, E_ARGS (extra adit-get flags, e.g.
+# "--spread --chunk-mib 16 --nixl-progress-delay-us 100").
 P=X
 source "$(dirname "$0")/lib/common.sh"
 PLAN=${PLAN:?plan JSONL with presigned urls}
-PROXY1=${PROXY1:?}
-PROXY2=${PROXY2:?}
+PROXIES=${PROXIES:-${PROXY1:?PROXIES or PROXY1}${PROXY2:+,$PROXY2}}
+IFS=, read -r -a PX <<<"$PROXIES"
 CYCLES=${CYCLES:-6}
 ARMS=(${ARMS:-B512 B1024 E1 E2})
+DEVICES=${DEVICES:-0}
+BUF_GIB=${BUF_GIB:-65}
+B_CONCURRENCY=${B_CONCURRENCY:-1}
+E_CONCURRENCY=${E_CONCURRENCY:-1}
+STRIPE=${STRIPE:-1}
+E_ARGS=${E_ARGS:-}
+CHUNK_MIB=${CHUNK_MIB:-8}
 PY=${PY:-/opt/adit-venv/bin/python}
 n=${#ARMS[@]}
 arm() {
     local a=$1 c=$2
     cold
     case $a in
-        B512|B1024)
+        B[0-9]*)
             local th=${a#B}
             $PY bench/paths/lib/gpuload.py --mode remotefile --plan "$PLAN" --threads "$th" --task-size-mib 64 \
-                --concurrency 1 --region "$REGION" --runs 1 --meta path=B --meta "workload=$WORKLOAD" --meta "cold=$COLD" \
+                --devices "$DEVICES" --buffer-gib "$BUF_GIB" --concurrency "$B_CONCURRENCY" --region "$REGION" --runs 1 \
+                --meta path=B --meta "workload=$WORKLOAD" --meta "cold=$COLD" \
                 --meta "client_instance=$CLIENT_INSTANCE" --meta "commit=$COMMIT" --out "$OUT" 2>&1 | tail -1 ;;
-        E1|E2)
-            local px=$PROXY1 st=()
-            [[ $a == E2 ]] && { px=$PROXY1,$PROXY2; st=(--stripe); }
-            adit-get --proxies "$px" "${st[@]}" --plan "$PLAN" --agent-name "il-$a-$c-$$" --buffer-gib 65 --chunk-mib 8 \
-                --concurrency 1 --runs 1 --meta path=E --meta "workload=$WORKLOAD" --meta "cold=$COLD" \
+        E[0-9]*)
+            local k=${a#E} st=()
+            (( k >= 1 && k <= ${#PX[@]} )) || { log "arm $a: only ${#PX[@]} proxies"; return 1; }
+            local px
+            px=$(IFS=,; echo "${PX[*]:0:k}")
+            [[ $STRIPE == 1 && $k -gt 1 ]] && st=(--stripe)
+            # shellcheck disable=SC2086  # E_ARGS is a flag list
+            adit-get --proxies "$px" "${st[@]}" --plan "$PLAN" --agent-name "il-$a-$c-$$" --devices "$DEVICES" \
+                --buffer-gib "$BUF_GIB" --chunk-mib "$CHUNK_MIB" --concurrency "$E_CONCURRENCY" --runs 1 $E_ARGS \
+                --meta path=E --meta "workload=$WORKLOAD" --meta "cold=$COLD" \
                 --meta "client_instance=$CLIENT_INSTANCE" --meta "commit=$COMMIT" --out "$OUT" 2>&1 | grep -E '^E,' | tail -1 ;;
         *) log "unknown arm $a"; return 1 ;;
     esac

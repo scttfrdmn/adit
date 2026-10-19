@@ -4,8 +4,10 @@
 # Pair health gate (#18): one 4 GiB write-only NIXL probe, proxy DRAM -> client VRAM. Fails unless
 # it reaches MIN_GBPS and the proxy's EFA write-error counter did not move. A degraded pair once
 # produced a full ladder of plausible-looking rows at 13.6 Gb/s; this stops that before it starts.
+# With ALL_RAILS=1 it also fails unless every EFA device on the proxy carried writes (G2,
+# multi-card proxies).
 #
-#   ADIT_SPAWN=... bash hack/health.sh <client-box> <proxy-box> <client-ip> [min_gbps=180]
+#   ADIT_SPAWN=... [ALL_RAILS=1] bash hack/health.sh <client-box> <proxy-box> <client-ip> [min_gbps=180]
 set +e
 set -uo pipefail
 echo "opts=$-"
@@ -15,8 +17,13 @@ echo "health: $line"
 gbps=$(cut -d, -f7 <<<"$line")
 werr=$(cut -d, -f9 <<<"$line")
 verdict=$(cut -d, -f12 <<<"$line")
+rails=$(cut -d, -f13 <<<"$line")
+if [[ ${ALL_RAILS-0} == 1 && ( -z $rails || ${rails%/*} != "${rails#*/}" ) ]]; then
+    echo "HEALTH FAIL: rails=${rails:-none}: not every proxy EFA device carried writes"
+    exit 1
+fi
 if [[ -z $gbps || $verdict != PASS || ${werr:-1} != 0 ]] || ! awk -v g="$gbps" -v m="$MIN" 'BEGIN{exit !(g>=m)}'; then
     echo "HEALTH FAIL: gbps=${gbps:-none} (min $MIN) wr_err_delta=${werr:-?} verdict=${verdict:-none}"
     exit 1
 fi
-echo "HEALTH OK: gbps=$gbps"
+echo "HEALTH OK: gbps=$gbps rails=${rails:-?}"

@@ -57,3 +57,35 @@ fn batched_digests_equal_per_object_digests() {
         assert_eq!(got, sha256_parts_cpu(&host[start..start + *len as usize], *part as usize));
     }
 }
+
+/// G2's multi-GPU oracle: an object split part-aligned across every visible GPU, each GPU hashing
+/// its own segment, composes to the whole object's part digests. Skips on a single-GPU host.
+#[test]
+#[ignore = "needs CUDA GPUs"]
+fn segments_hashed_on_their_own_gpus_compose() {
+    let n = cudarc::driver::CudaContext::device_count().expect("CUDA driver") as usize;
+    if n < 2 {
+        eprintln!("one GPU: nothing to compose");
+        return;
+    }
+    let part = 1usize << 20;
+    let len = n * 3 * part + 777;
+    let host: Vec<u8> = (0..len).map(|i| (i as u32).wrapping_mul(2654435761).rotate_right(11) as u8).collect();
+    let per = len.div_ceil(part).div_ceil(n) * part;
+    let mut parts = vec![];
+    for g in 0..n {
+        let (a, b) = (g * per, ((g + 1) * per).min(len));
+        if a >= b {
+            continue;
+        }
+        let gpu = Gpu::new(g).unwrap();
+        let pinned = gpu.alloc_pinned(b - a).unwrap();
+        // SAFETY: pinned buffer of `b - a` bytes, written before upload.
+        unsafe { std::ptr::copy_nonoverlapping(host[a..].as_ptr(), pinned.as_ptr().unwrap() as *mut u8, b - a) };
+        let mut dev = gpu.alloc(b - a).unwrap();
+        gpu.upload(&pinned, b - a, &mut dev, 0).unwrap();
+        assert_eq!(dev.ordinal(), g);
+        parts.extend(gpu.sha256_parts_many(&[(dev.addr(), (b - a) as u64, part as u64)]).unwrap().remove(0));
+    }
+    assert_eq!(parts, sha256_parts_cpu(&host, part));
+}

@@ -28,17 +28,21 @@ fn proc_cpu_jiffies() -> Option<u64> {
     Some(f.get(11)?.parse::<u64>().ok()? + f.get(12)?.parse::<u64>().ok()?)
 }
 
-fn efa_counters() -> BTreeMap<String, u64> {
-    let mut out = BTreeMap::new();
+/// Counters per EFA device (`rdmap…`), summed over its ports.
+type DevCounters = BTreeMap<String, BTreeMap<String, u64>>;
+
+fn efa_counters() -> DevCounters {
+    let mut out = DevCounters::new();
     let Ok(devs) = std::fs::read_dir("/sys/class/infiniband") else { return out };
     for dev in devs.flatten() {
         let Ok(ports) = std::fs::read_dir(dev.path().join("ports")) else { continue };
+        let per = out.entry(dev.file_name().to_string_lossy().into_owned()).or_default();
         for port in ports.flatten() {
             let Ok(ctrs) = std::fs::read_dir(port.path().join("hw_counters")) else { continue };
             for c in ctrs.flatten() {
                 if let Ok(v) = std::fs::read_to_string(c.path()).map(|s| s.trim().parse::<u64>()) {
                     let name = c.file_name().to_string_lossy().into_owned();
-                    *out.entry(name).or_default() += v.unwrap_or(0);
+                    *per.entry(name).or_default() += v.unwrap_or(0);
                 }
             }
         }
@@ -46,10 +50,25 @@ fn efa_counters() -> BTreeMap<String, u64> {
     out
 }
 
+/// Per-device deltas `after - before`.
+fn delta(before: &DevCounters, after: &DevCounters) -> DevCounters {
+    after
+        .iter()
+        .map(|(dev, ctrs)| {
+            let b = before.get(dev);
+            let d = ctrs
+                .iter()
+                .map(|(k, v)| (k.clone(), v.saturating_sub(b.and_then(|b| b.get(k)).copied().unwrap_or(0))))
+                .collect();
+            (dev.clone(), d)
+        })
+        .collect()
+}
+
 pub struct Window {
     host0: Option<u64>,
     proc0: Option<u64>,
-    efa0: BTreeMap<String, u64>,
+    efa0: DevCounters,
     perf: Option<(Child, std::path::PathBuf)>,
 }
 
@@ -64,7 +83,10 @@ pub struct Measured {
     /// evidence that no host copy happened (#26): an EFA that emulates RDMA moves the same bytes
     /// as two-sided receives and leaves these at zero.
     pub nic_placed_bytes: Option<u64>,
+    /// Counter deltas summed over every EFA device.
     pub efa: BTreeMap<String, u64>,
+    /// Counter deltas per EFA device: which rails carried the transfer (G2, multi-card hosts).
+    pub efa_by_dev: DevCounters,
     pub mem_read_bytes: Option<u64>,
     pub mem_write_bytes: Option<u64>,
     pub perf_note: String,
@@ -109,9 +131,11 @@ impl Window {
             proc_cpu_s: proc1.zip(self.proc0).map(|(b, a)| b.saturating_sub(a) as f64 / CLK_TCK),
             ..Default::default()
         };
-        let efa1 = efa_counters();
-        for (k, v) in &efa1 {
-            m.efa.insert(k.clone(), v.saturating_sub(*self.efa0.get(k).unwrap_or(&0)));
+        m.efa_by_dev = delta(&self.efa0, &efa_counters());
+        for ctrs in m.efa_by_dev.values() {
+            for (k, v) in ctrs {
+                *m.efa.entry(k.clone()).or_default() += v;
+            }
         }
         m.efa_rx_bytes = m.efa.get("rdma_write_recv_bytes").or_else(|| m.efa.get("rx_bytes")).copied();
         let (w, r) = (m.efa.get("rdma_write_recv_bytes").copied(), m.efa.get("rdma_read_bytes").copied());
@@ -150,6 +174,30 @@ impl Window {
     }
 }
 
+impl Measured {
+    /// Bytes NIC-placed per device (RDMA write receive plus read), every device listed.
+    pub fn placed_by_dev(&self) -> BTreeMap<String, u64> {
+        self.efa_by_dev
+            .iter()
+            .map(|(d, c)| {
+                (
+                    d.clone(),
+                    c.get("rdma_write_recv_bytes").copied().unwrap_or(0)
+                        + c.get("rdma_read_bytes").copied().unwrap_or(0),
+                )
+            })
+            .collect()
+    }
+}
+
+/// `active/total` devices with a non-zero count, and the per-device list, e.g.
+/// `2/16 rdmap0s1=1234,rdmap1s1=0,…`; for the notes column.
+pub fn rails_note(per_dev: &BTreeMap<String, u64>) -> String {
+    let active = per_dev.values().filter(|&&v| v > 0).count();
+    let list: Vec<String> = per_dev.iter().map(|(d, v)| format!("{d}={v}")).collect();
+    format!("{active}/{} {}", per_dev.len(), list.join(","))
+}
+
 /// How the payload reached registered memory, from the NIC counters (#26).
 pub fn placement(nic_placed: Option<u64>, payload: u64) -> &'static str {
     match nic_placed {
@@ -162,6 +210,25 @@ pub fn placement(nic_placed: Option<u64>, payload: u64) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn per_device_deltas_and_rails() {
+        let mk = |v: &[(&str, &str, u64)]| {
+            let mut m = DevCounters::new();
+            for &(d, k, x) in v {
+                m.entry(d.into()).or_default().insert(k.into(), x);
+            }
+            m
+        };
+        let before = mk(&[("a", "rdma_write_recv_bytes", 10), ("b", "rdma_write_recv_bytes", 5)]);
+        let after =
+            mk(&[("a", "rdma_write_recv_bytes", 30), ("b", "rdma_write_recv_bytes", 5), ("b", "rdma_read_bytes", 7)]);
+        let m = Measured { efa_by_dev: delta(&before, &after), ..Default::default() };
+        let placed = m.placed_by_dev();
+        assert_eq!(placed["a"], 20);
+        assert_eq!(placed["b"], 7);
+        assert_eq!(rails_note(&placed), "2/2 a=20,b=7");
+    }
 
     #[test]
     fn placement_verdicts() {
