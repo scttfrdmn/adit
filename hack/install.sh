@@ -165,6 +165,25 @@ B
     mark bgrun
 fi
 
+# Path A and B tools on clients: s5cmd, and a Python env with CuPy, KvikIO, the S3 Connector for
+# PyTorch, PyTorch and adit-py (the shared GPU oracle). Package names track the CUDA major version.
+if [[ $ROLE == client ]] && ! done_ pathtools; then
+    if ! command -v s5cmd >/dev/null; then
+        v=2.3.0
+        curl -fsSL "https://github.com/peak/s5cmd/releases/download/v$v/s5cmd_${v}_Linux-64bit.tar.gz" | tar xz -C /usr/local/bin s5cmd || fail s5cmd
+    fi
+    python3 -m venv /opt/adit-venv || fail venv
+    V=/opt/adit-venv/bin/pip
+    $V install -q --upgrade pip maturin || fail pip
+    cu=$(nvcc --version 2>/dev/null | sed -n 's/.*release \([0-9]*\)\..*/\1/p')
+    $V install -q "cupy-cuda${cu}x" || $V install -q cupy-cuda12x || fail cupy
+    $V install -q "kvikio-cu${cu}" || $V install -q kvikio-cu12 || fail kvikio
+    $V install -q torch --index-url "https://download.pytorch.org/whl/cu${cu}0" || $V install -q torch || fail torch
+    $V install -q s3torchconnector || fail s3torchconnector
+    chown -R "$ADIT_USER" /opt/adit-venv
+    mark pathtools
+fi
+
 # The adit workspace: always refreshed (code changes between runs; the toolchain does not).
 log "building adit $ADIT_REF"
 if [[ ! -d $SRC/adit/.git ]]; then
@@ -175,7 +194,12 @@ sudo -u "$ADIT_USER" -H bash -c "cd $SRC/adit && git fetch -q origin && git chec
 pkgs="-p adit-proxy"
 [[ $ROLE == client ]] && pkgs="-p adit-client -p adit-proxy"
 sudo -u "$ADIT_USER" -H bash -c "cd $SRC/adit && NIXL_PREFIX=$NIXL_PREFIX NIXL_NO_STUBS_FALLBACK=1 ~/.cargo/bin/cargo build --release $pkgs" || fail "adit build (real NIXL)"
-for b in adit-proxy adit-nixl-probe-init adit-get adit-load adit-nixl-probe-target; do
+if [[ $ROLE == client ]]; then
+    # adit-py into the path-tools venv, against the real NIXL.
+    sudo -u "$ADIT_USER" -H bash -c "cd $SRC/adit/crates/adit-py && NIXL_PREFIX=$NIXL_PREFIX NIXL_NO_STUBS_FALLBACK=1 PATH=\$HOME/.cargo/bin:\$PATH /opt/adit-venv/bin/maturin build -q --release -o /tmp/adit-wheels" || fail "adit-py build"
+    /opt/adit-venv/bin/pip install -q --force-reinstall /tmp/adit-wheels/adit-*.whl || fail "adit-py install"
+fi
+for b in adit-proxy adit-nixl-probe-init adit-get adit-load adit-nixl-probe-target adit-fetch-bench; do
     [[ -x $SRC/adit/target/release/$b ]] && ln -sf "$SRC/adit/target/release/$b" /usr/local/bin/$b
 done
 
