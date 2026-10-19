@@ -1,1 +1,1 @@
-instance,region,az,ami,driver,cuda,efa_installer,libfabric,nixl,gpu,gpus,efa_devices,fi_efa_rma,fi_efa_hmem_cuda,nixlbench_vram_write_gbps,nixlbench_vram_read_gbps,gdscheck_gds,gdscheck_efa,usd_per_hr,commit,notes
+instance,region,az,ami,driver,cuda,efa_installer,libfabric,nixl,gpu,gpus,efa_devices,efa_device_id,fi_efa_rma,fi_efa_hmem_cuda,hw_rdma_write_to_vram,hw_rdma_read_to_vram,nixlbench_vram_write_gbps,nixlbench_vram_read_gbps,cross_box_write_gbps,gdscheck_gds,gdscheck_efa,usd_per_hr,commit,notes

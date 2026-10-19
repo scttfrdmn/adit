@@ -1,0 +1,31 @@
+# #18 fetch-only decomposition: adit-fetch-bench (production CRT source and pipeline, RDMA write replaced by a no-op) on c8gn.16xlarge (on-demand, us-east-1b, ami-0fa5a88e250674e12), 200 Gb/s NIC
+# data: s3://scttfrdmn-lith-bench (us-east-1, region-checked by aditctl presign): T1 = one 64 GiB key (seed 1); t2x64 = 64 x 1 GiB keys spread over 16 hex prefixes (seed 3), both 8 MiB SHA-256 multipart
+# per-chunk timings for every row: s3://scttfrdmn-lith-bench/adit/g0x/chunks-fetch.csv.gz (7-day expiry)
+label,run,objects,chunk_bytes,slots,objects_inflight,meta_type,scheme,throughput_gbps,bytes,wall_s,gbps,s3_requests,cpu_s,avg_fetch_ms,failed,config,commit,notes
+t1-s1024,1,1,8388608,1024,8,Default,https,200,68719476736,5.845,94.050,8192,73.64,609.6,0,label=t1-s1024;chunk=8MiB;proxy=c8gn.16xlarge,913de56,one 64 GiB key
+t1-s1024,2,1,8388608,1024,8,Default,https,200,68719476736,5.376,102.269,8192,74.28,560.8,0,label=t1-s1024;chunk=8MiB;proxy=c8gn.16xlarge,913de56,one 64 GiB key
+t1-s1024,3,1,8388608,1024,8,Default,https,200,68719476736,5.039,109.091,8192,75.07,533.5,0,label=t1-s1024;chunk=8MiB;proxy=c8gn.16xlarge,913de56,one 64 GiB key
+t1-s512,1,1,8388608,512,8,Default,https,200,68719476736,5.351,102.748,8192,81.52,290.4,0,label=t1-s512;chunk=8MiB;proxy=c8gn.16xlarge,913de56,one 64 GiB key
+t1-s512,2,1,8388608,512,8,Default,https,200,68719476736,5.007,109.795,8192,76.37,264.7,0,label=t1-s512;chunk=8MiB;proxy=c8gn.16xlarge,913de56,one 64 GiB key
+t1-s512,3,1,8388608,512,8,Default,https,200,68719476736,4.832,113.763,8192,74.15,258.4,0,label=t1-s512;chunk=8MiB;proxy=c8gn.16xlarge,913de56,one 64 GiB key
+t1-s256,1,1,8388608,256,8,Default,https,200,68719476736,8.267,66.503,8192,68.83,240.8,0,label=t1-s256;chunk=8MiB;proxy=c8gn.16xlarge,913de56,one 64 GiB key
+t1-s256,2,1,8388608,256,8,Default,https,200,68719476736,8.043,68.352,8192,68.27,239.4,0,label=t1-s256;chunk=8MiB;proxy=c8gn.16xlarge,913de56,one 64 GiB key
+t1-s256,3,1,8388608,256,8,Default,https,200,68719476736,8.518,64.540,8192,71.08,255.4,0,label=t1-s256;chunk=8MiB;proxy=c8gn.16xlarge,913de56,one 64 GiB key
+t1-getobject,1,1,8388608,512,8,GetObject,https,200,68719476736,4.650,118.221,8192,67.51,261.6,0,label=t1-getobject;chunk=8MiB;proxy=c8gn.16xlarge,913de56,"CRT GetObject meta type, 8 MiB parts"
+t1-getobject,2,1,8388608,512,8,GetObject,https,200,68719476736,4.885,112.533,8192,67.99,251.3,0,label=t1-getobject;chunk=8MiB;proxy=c8gn.16xlarge,913de56,"CRT GetObject meta type, 8 MiB parts"
+t1-getobject,3,1,8388608,512,8,GetObject,https,200,68719476736,4.482,122.657,8192,66.86,246.1,0,label=t1-getobject;chunk=8MiB;proxy=c8gn.16xlarge,913de56,"CRT GetObject meta type, 8 MiB parts"
+t1-http,1,1,8388608,512,8,Default,http,200,68719476736,4.759,115.529,8192,59.08,253.7,0,label=t1-http;chunk=8MiB;proxy=c8gn.16xlarge,913de56,presigned URL rewritten to http
+t1-http,2,1,8388608,512,8,Default,http,200,68719476736,4.675,117.584,8192,56.65,249.0,0,label=t1-http;chunk=8MiB;proxy=c8gn.16xlarge,913de56,presigned URL rewritten to http
+t1-http,3,1,8388608,512,8,Default,http,200,68719476736,4.637,118.556,8192,57.71,245.7,0,label=t1-http;chunk=8MiB;proxy=c8gn.16xlarge,913de56,presigned URL rewritten to http
+t2x64-oi8,1,64,8388608,512,8,Default,https,200,68719476736,4.774,115.161,8192,82.90,245.5,0,label=t2x64-oi8;chunk=8MiB;proxy=c8gn.16xlarge,913de56,"64 x 1 GiB keys over 16 prefixes, 8 objects in flight"
+t2x64-oi8,2,64,8388608,512,8,Default,https,200,68719476736,3.909,140.631,8192,77.43,200.8,0,label=t2x64-oi8;chunk=8MiB;proxy=c8gn.16xlarge,913de56,"64 x 1 GiB keys over 16 prefixes, 8 objects in flight"
+t2x64-oi8,3,64,8388608,512,8,Default,https,200,68719476736,3.940,139.525,8192,77.36,189.4,0,label=t2x64-oi8;chunk=8MiB;proxy=c8gn.16xlarge,913de56,"64 x 1 GiB keys over 16 prefixes, 8 objects in flight"
+t2x64-oi64,1,64,8388608,512,64,Default,https,200,68719476736,3.417,160.899,8192,86.93,198.2,0,label=t2x64-oi64;chunk=8MiB;proxy=c8gn.16xlarge,913de56,"64 x 1 GiB keys over 16 prefixes, 64 in flight"
+t2x64-oi64,2,64,8388608,512,64,Default,https,200,68719476736,3.189,172.393,8192,83.64,185.3,0,label=t2x64-oi64;chunk=8MiB;proxy=c8gn.16xlarge,913de56,"64 x 1 GiB keys over 16 prefixes, 64 in flight"
+t2x64-oi64,3,64,8388608,512,64,Default,https,200,68719476736,3.094,177.696,8192,82.04,181.8,0,label=t2x64-oi64;chunk=8MiB;proxy=c8gn.16xlarge,913de56,"64 x 1 GiB keys over 16 prefixes, 64 in flight"
+perf2,1,64,8388608,512,64,Default,https,200,68719476736,3.744,146.853,8192,80.57,220.0,0,label=perf2;chunk=8MiB;proxy=c8gn.16xlarge,913de56,"64 keys, 64 in flight; run under perf record -a"
+perf2,2,64,8388608,512,64,Default,https,200,68719476736,3.207,171.424,8192,81.85,193.7,0,label=perf2;chunk=8MiB;proxy=c8gn.16xlarge,913de56,"64 keys, 64 in flight; run under perf record -a"
+perf2,3,64,8388608,512,64,Default,https,200,68719476736,3.128,175.761,8192,83.50,187.9,0,label=perf2;chunk=8MiB;proxy=c8gn.16xlarge,913de56,"64 keys, 64 in flight; run under perf record -a"
+perf2,4,64,8388608,512,64,Default,https,200,68719476736,3.169,173.477,8192,81.37,184.5,0,label=perf2;chunk=8MiB;proxy=c8gn.16xlarge,913de56,"64 keys, 64 in flight; run under perf record -a"
+perf2,5,64,8388608,512,64,Default,https,200,68719476736,3.088,178.019,8192,80.49,187.8,0,label=perf2;chunk=8MiB;proxy=c8gn.16xlarge,913de56,"64 keys, 64 in flight; run under perf record -a"
+perf2,6,64,8388608,512,64,Default,https,200,68719476736,3.123,176.031,8192,80.78,184.7,0,label=perf2;chunk=8MiB;proxy=c8gn.16xlarge,913de56,"64 keys, 64 in flight; run under perf record -a"
