@@ -68,3 +68,31 @@ extern "C" __global__ void sha256_parts(const u8 *data, u64 len, u64 part, u64 n
         out[32 * i + 4 * k + 3] = (u8)h[k];
     }
 }
+
+// Many parts at once, anywhere in device memory: thread i hashes lens[i] bytes at starts[i]. One
+// launch verifies a whole wave of objects (thousands of parts) instead of one launch per object.
+extern "C" __global__ void sha256_segs(const u64 *starts, const u64 *lens, u64 nparts, u8 *out) {
+    u64 i = (u64)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= nparts) return;
+    const u8 *p = (const u8 *)starts[i];
+    u64 n = lens[i];
+    u32 h[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+    u64 full = n / 64;
+    for (u64 k = 0; k < full; k++) compress(h, p + 64 * k);
+    u8 tail[128];
+    u64 r = n - 64 * full;
+    for (u64 k = 0; k < r; k++) tail[k] = p[64 * full + k];
+    tail[r] = 0x80;
+    u64 tlen = r + 1 + 8 <= 64 ? 64 : 128;
+    for (u64 k = r + 1; k < tlen - 8; k++) tail[k] = 0;
+    u64 bits = n * 8;
+    for (int k = 0; k < 8; k++) tail[tlen - 1 - k] = (u8)(bits >> (8 * k));
+    compress(h, tail);
+    if (tlen == 128) compress(h, tail + 64);
+    for (int k = 0; k < 8; k++) {
+        out[32 * i + 4 * k] = (u8)(h[k] >> 24);
+        out[32 * i + 4 * k + 1] = (u8)(h[k] >> 16);
+        out[32 * i + 4 * k + 2] = (u8)(h[k] >> 8);
+        out[32 * i + 4 * k + 3] = (u8)h[k];
+    }
+}

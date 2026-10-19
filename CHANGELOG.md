@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **GPU verification left the GPU mostly idle.** `adit-get` hashed each object with its own
+  kernel launch: 128 threads for a 1 GiB object, synchronized one at a time. On T2 (1,000 × 1 GiB)
+  that made verification about 4× the transfer time. One `sha256_segs` launch now hashes every part
+  of a wave (`Gpu::sha256_parts_many`). The CPU-shim check passes, and a hardware test compares the
+  result with the per-object and CPU digests.
+
 - **Host CPU could read below process CPU** (#27). The counter window now closes the process
   sample before the host sample, so the host window encloses the process window, and deltas
   saturate. A Linux test busy-loops 0.4 s and checks the two counters agree.

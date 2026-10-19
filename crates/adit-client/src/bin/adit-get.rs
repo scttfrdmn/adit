@@ -14,7 +14,7 @@ use adit_client::csvrow::Row;
 use adit_client::gpu::Gpu;
 use adit_client::nixl::ClientAgent;
 use adit_client::oracle::ObjectManifest;
-use adit_client::{Client, Config, GetError};
+use adit_client::{Client, Config};
 use adit_proto::Dest;
 use clap::Parser;
 use futures::StreamExt;
@@ -204,6 +204,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => mem_ok = false,
             }
             perf_note = m.perf_note.clone();
+            // Verify every delivered object of the wave in one GPU launch.
+            let mut delivered = Vec::new();
             for (i, off, r) in results {
                 let p = &plan[i];
                 objects += 1;
@@ -211,21 +213,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(rep) => {
                         bytes += rep.bytes;
                         s3_requests += rep.s3_requests;
-                        let parts = gpu.sha256_parts(dest.addr + off, p.m.size, p.m.part_size)?;
-                        let v = p.m.check(&parts);
-                        if !v.matches {
-                            bad += 1;
-                            notes.push(format!("MISMATCH {} parts {:?}", p.m.key, v.bad_parts));
-                        }
-                    }
-                    Err(e @ GetError::Partial { .. }) => {
-                        partial += 1;
-                        notes.push(format!("{}: {e}", p.m.key));
+                        delivered.push((i, off));
                     }
                     Err(e) => {
                         partial += 1;
                         notes.push(format!("{}: {e}", p.m.key));
                     }
+                }
+            }
+            let spans: Vec<_> =
+                delivered.iter().map(|&(i, off)| (dest.addr + off, plan[i].m.size, plan[i].m.part_size)).collect();
+            for (&(i, _), parts) in delivered.iter().zip(gpu.sha256_parts_many(&spans)?) {
+                let v = plan[i].m.check(&parts);
+                if !v.matches {
+                    bad += 1;
+                    notes.push(format!("MISMATCH {} parts {:?}", plan[i].m.key, v.bad_parts));
                 }
             }
         }
