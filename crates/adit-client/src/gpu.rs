@@ -26,6 +26,7 @@ pub struct Gpu {
     ctx: Arc<CudaContext>,
     stream: Arc<CudaStream>,
     sha: CudaFunction,
+    sha_segs: CudaFunction,
 }
 
 /// A device allocation. `addr()` is what gets registered with NIXL and sent to proxies.
@@ -64,7 +65,8 @@ impl Gpu {
         let ptx = cudarc::nvrtc::compile_ptx(KERNEL)?;
         let module = ctx.load_module(ptx)?;
         let sha = module.load_function("sha256_parts")?;
-        Ok(Self { ctx, stream, sha })
+        let sha_segs = module.load_function("sha256_segs")?;
+        Ok(Self { ctx, stream, sha, sha_segs })
     }
 
     pub fn name(&self) -> String {
@@ -107,6 +109,51 @@ impl Gpu {
         self.stream.memcpy_htod(&host[..n], &mut view)?;
         self.stream.synchronize()?;
         Ok(())
+    }
+
+    /// SHA-256 of many objects' parts in one launch: `objects` are `(addr, len, part)`; the result
+    /// is each object's part digests, in order. A wave of 80 one-GiB objects is 10,240 parts, which
+    /// fills the GPU where one launch per object (128 threads) leaves it idle.
+    pub fn sha256_parts_many(&self, objects: &[(u64, u64, u64)]) -> Result<Vec<Vec<Digest32>>, GpuError> {
+        let (mut starts, mut lens, mut counts) = (Vec::new(), Vec::new(), Vec::new());
+        for &(addr, len, part) in objects {
+            if part == 0 {
+                return Err(GpuError::Other("part size 0".into()));
+            }
+            let n = len.div_ceil(part);
+            for k in 0..n {
+                starts.push(addr + k * part);
+                lens.push(part.min(len - k * part));
+            }
+            counts.push(n as usize);
+        }
+        let nparts = starts.len() as u64;
+        if nparts == 0 {
+            return Ok(counts.iter().map(|_| vec![]).collect());
+        }
+        let d_starts = self.stream.clone_htod(&starts)?;
+        let d_lens = self.stream.clone_htod(&lens)?;
+        let mut out = self.stream.alloc_zeros::<u8>(nparts as usize * 32)?;
+        let threads = 128u32;
+        let cfg = LaunchConfig {
+            grid_dim: ((nparts as u32).div_ceil(threads), 1, 1),
+            block_dim: (threads, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        let mut b = self.stream.launch_builder(&self.sha_segs);
+        b.arg(&d_starts).arg(&d_lens).arg(&nparts).arg(&mut out);
+        // SAFETY: thread i reads lens[i] bytes at starts[i] (caller's contract: device memory in
+        // this context) and writes 32 bytes at out[32 i], which has room for nparts digests.
+        unsafe { b.launch(cfg) }?;
+        let bytes = self.stream.clone_dtoh(&out)?;
+        let all: Vec<Digest32> = bytes.as_chunks::<32>().0.to_vec();
+        let mut res = Vec::with_capacity(counts.len());
+        let mut at = 0;
+        for n in counts {
+            res.push(all[at..at + n].to_vec());
+            at += n;
+        }
+        Ok(res)
     }
 
     /// SHA-256 of every `part`-byte part of the `len` bytes at device address `addr`, computed on
