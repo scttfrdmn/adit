@@ -51,10 +51,11 @@ arch_go() { case $(uname -m) in aarch64) echo arm64 ;; *) echo amd64 ;; esac; }
 
 # Only ever called with INSTALL=1. Sources: lith README ("Download the static binary"), Mountpoint
 # release bucket (the same URL lith's hack/devbox.sh uses, per-arch).
+LITH_VERSION=${LITH_VERSION:-v1.18.1}
 install_tools() {
     if ! command -v lith >/dev/null 2>&1; then
-        log "installing lith (latest release, linux_$(arch_go))"
-        curl -fsSL "https://github.com/scttfrdmn/lith/releases/latest/download/lith_linux_$(arch_go)" -o /tmp/lith \
+        log "installing lith $LITH_VERSION (linux_$(arch_go))"
+        curl -fsSL "https://github.com/scttfrdmn/lith/releases/download/$LITH_VERSION/lith_linux_$(arch_go)" -o /tmp/lith \
             && chmod +x /tmp/lith && sudo mv /tmp/lith /usr/local/bin/lith
         [[ $? == 0 ]] || { log "lith install failed"; return 1; }
     fi

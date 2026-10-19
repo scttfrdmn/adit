@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Path D sizing by target throughput.** `bench/paths/D/run.sh sizing` prints the PERSISTENT_2 configuration and $/hr needed to feed a client at a given rate. `plan` and `create` size for the larger of the working set and `TARGET_GBPS`, so path D runs at its best (law 3), not at the 4.8 TiB minimum. Path C pins lith (`LITH_VERSION`, default v1.18.1).
+
 - **Path runners A–E** with one contract (`bench/paths/README.md`):
   - **A:** s5cmd → NVMe → pinned → `cudaMemcpy` via `adit-load`, with the copy inside the window.
   - **B:** KvikIO `RemoteFile` swept over threads and task size, and the S3 Connector for PyTorch.
