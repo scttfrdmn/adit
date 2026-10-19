@@ -101,6 +101,9 @@ type Spec struct {
 	// capacity or quota. Size Proxy.CostLimit for on-demand: a cap sized for spot kills an
 	// on-demand fallback early.
 	ProxySpot bool
+	// ProxyStart is the first proxy index, so a later `fleet up --clients 0` adds proxies
+	// adit-<fleet>-proxy-<start>… next to boxes already placed.
+	ProxyStart int
 
 	mu sync.Mutex // serializes Log
 }
@@ -448,7 +451,7 @@ func (s *Spec) Up(ctx context.Context, ec2For EC2For) ([]Box, error) {
 			b   Box
 			err error
 		}
-		results := make([]res, s.Proxy.Count)
+		results := make([]res, s.ProxyStart+s.Proxy.Count)
 		var wg sync.WaitGroup
 		proxy := func(i int) {
 			pc := Candidate{Region: c.Region, AZ: c.AZ, Spot: s.ProxySpot}
@@ -461,9 +464,9 @@ func (s *Spec) Up(ctx context.Context, ec2For EC2For) ([]Box, error) {
 			results[i] = res{b, err}
 		}
 		if s.Proxy.Count > 0 {
-			proxy(0)
+			proxy(s.ProxyStart)
 		}
-		for i := 1; i < s.Proxy.Count; i++ {
+		for i := s.ProxyStart + 1; i < s.ProxyStart+s.Proxy.Count; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
