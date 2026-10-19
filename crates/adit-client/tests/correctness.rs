@@ -78,6 +78,7 @@ impl Proxy {
                         throughput_target_gbps: 10.0,
                         max_connections: 0,
                         write_inflight: 0,
+                        meta_type: "Default".into(),
                         stub: true,
                     },
                 });

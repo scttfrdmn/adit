@@ -45,6 +45,7 @@ async fn proxy(lb: &Arc<Loopback>, attempts: u32, slots: usize) -> String {
             throughput_target_gbps: 10.0,
             max_connections: 0,
             write_inflight: 0,
+            meta_type: "Default".into(),
             stub: true,
         },
     });
@@ -218,4 +219,9 @@ async fn metrics_export_counters_and_config() {
     assert!(m.contains(&format!("adit_proxy_bytes_written_total {n}")), "{m}");
     assert!(m.contains("chunk_bytes=\"1048576\""), "{m}");
     assert!(m.contains("backend=\"loopback\""), "{m}");
+    // Two 1 MiB chunks: every stage histogram saw both.
+    for h in ["chunk_slot_wait", "chunk_fetch", "chunk_write_wait", "chunk_write"] {
+        assert!(m.contains(&format!("adit_proxy_{h}_seconds_count 2")), "{h}: {m}");
+        assert!(m.contains(&format!("adit_proxy_{h}_seconds_bucket{{le=\"+Inf\"}} 2")), "{h}: {m}");
+    }
 }

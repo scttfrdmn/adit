@@ -125,6 +125,8 @@ async fn get(State(s): State<Arc<Inner>>, Path(path): Path<String>, headers: Hea
         .status(status)
         .header(header::CONTENT_LENGTH, body.len())
         .header(header::CONTENT_RANGE, format!("bytes {a}-{b}/{len}"))
+        // The CRT's GetObject meta request requires an ETag to keep its parts consistent.
+        .header(header::ETAG, format!("\"mock-{len}\""))
         .body(Body::from(body))
         .unwrap()
 }

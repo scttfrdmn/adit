@@ -59,6 +59,8 @@ dependencies = [
  "futures",
  "nixl-sys",
  "reqwest",
+ "serde",
+ "serde_json",
  "sha2",
  "thiserror",
  "tokio",

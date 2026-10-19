@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use adit_fetch::crt::{CrtConfig, CrtSource};
+use adit_fetch::crt::{CrtConfig, CrtSource, MetaType};
 use adit_fetch::mock::MockS3;
 use adit_fetch::{FetchError, RangeSource, Retrying, chunks};
 
@@ -85,4 +85,19 @@ async fn missing_key_is_not_retried() {
     let err = src.get_into(&s3.url("b/missing"), 0..16, &mut dst).await.unwrap_err();
     assert!(matches!(err.error, FetchError::Status { status: 404, .. }), "{err:?}");
     assert_eq!(err.requests, 1, "a 404 is one request, not retried");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn get_object_meta_type_lands_at_offset_zero_of_destination() {
+    let s3 = MockS3::start().await;
+    let obj = bytes(9 << 20, 21);
+    s3.put("b/k", obj.clone());
+    let cfg = CrtConfig { meta_type: MetaType::GetObject, part_size: Some(1 << 20), ..CrtConfig::default() };
+    let src = CrtSource::new(&cfg).unwrap();
+    let r = (3 << 20) + 11..(8 << 20) + 3;
+    let mut dst = vec![0u8; (r.end - r.start) as usize];
+    let st = src.get_into(&s3.url("b/k"), r.clone(), &mut dst).await.unwrap();
+    assert_eq!(st.bytes, r.end - r.start);
+    assert!(dst == obj[r.start as usize..r.end as usize], "GetObject body landed at the wrong offsets");
+    assert!(st.requests >= 1);
 }
