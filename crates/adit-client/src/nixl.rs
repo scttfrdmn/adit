@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use nixl_sys::{
     Agent, AgentConfig, Backend, MemType, MemoryRegion, NixlDescriptor, NotificationMap, OptArgs, RegistrationHandle,
-    ThreadSync,
+    ThreadSync, XferDescList, XferOp, XferStatus,
 };
 
 use crate::completion::NotifSource;
@@ -93,6 +93,45 @@ impl ClientAgent {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Load a peer's metadata (for client-initiated READ); returns its agent name.
+    pub fn load_remote(&self, md: &[u8]) -> Result<String, NixlFailure> {
+        self.agent.load_remote_md(md).map_err(nixl)
+    }
+
+    /// Client-initiated pull: READ `len` bytes at `remote_addr` (DRAM on `remote`) into this
+    /// agent's registered VRAM at `local_addr`, blocking until done. The fallback the design
+    /// names for EFA generations without hardware RDMA write (#20).
+    pub fn read(
+        &self,
+        local_addr: u64,
+        dev: u64,
+        remote: &str,
+        remote_addr: u64,
+        len: usize,
+        deadline: std::time::Duration,
+    ) -> Result<(), NixlFailure> {
+        let mut local = XferDescList::new(MemType::Vram).map_err(nixl)?;
+        local.add_desc(local_addr as usize, len, dev);
+        let mut far = XferDescList::new(MemType::Dram).map_err(nixl)?;
+        far.add_desc(remote_addr as usize, len, 0);
+        let mut opt = OptArgs::new().map_err(nixl)?;
+        opt.add_backend(&self._backend).map_err(nixl)?;
+        let req = self.agent.create_xfer_req(XferOp::Read, &local, &far, remote, Some(&opt)).map_err(nixl)?;
+        if !self.agent.post_xfer_req(&req, Some(&opt)).map_err(nixl)? {
+            return Ok(());
+        }
+        let until = std::time::Instant::now() + deadline;
+        loop {
+            match self.agent.get_xfer_status(&req).map_err(nixl)? {
+                XferStatus::Success => return Ok(()),
+                XferStatus::InProgress if std::time::Instant::now() < until => std::thread::yield_now(),
+                XferStatus::InProgress => {
+                    return Err(NixlFailure(format!("read of {len} bytes still in progress after {deadline:?}")));
+                }
+            }
+        }
     }
 
     /// Serialized metadata (connection info plus registered memory) for proxies.
