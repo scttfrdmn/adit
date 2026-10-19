@@ -148,7 +148,11 @@ def main():
                 if not ok:
                     bad += 1
                     notes.append(f"MISMATCH {o['key']} parts {badparts[:4]}")
-            del bufs
+            # Drop every reference (the loop variable `b` too) before freeing, or the next wave
+            # (or run) allocates on top of this one.
+            b = None
+            bufs = None
+            got = None
             cp.get_default_memory_pool().free_all_blocks()
         bad_any |= bad > 0
         total = sum(o["size"] for o in objs)
