@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Path runners A–E** with one contract (`bench/paths/README.md`):
+  - **A:** s5cmd → NVMe → pinned → `cudaMemcpy` via `adit-load`, with the copy inside the window.
+  - **B:** KvikIO `RemoteFile` swept over threads and task size, and the S3 Connector for PyTorch.
+  - **C:** lith and Mountpoint + cuFile compat. Scaffold.
+  - **D:** FSx for Lustre PERSISTENT_2 + EFA + DRA + GDS, with a cost plan, CONFIRM-gated create and a deadline watchdog. Scaffold.
+  - **E:** `adit-get`.
+  
+  B, C and D share one GPU loader (`bench/paths/lib/gpuload.py`) with the same counter window and GPU oracle as E. The client bootstrap installs s5cmd and a Python env with CuPy, KvikIO, PyTorch, the S3 Connector and adit-py.
+
 - **Instruments for the G0-close round:**
   - per-chunk stage histograms on `/metrics`: slot wait, fetch, write wait and write, so pipeline throughput can be split by stage (#18);
   - per-chunk timings in `pipeline::Outcome`;
