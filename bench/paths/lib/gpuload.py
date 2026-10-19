@@ -77,7 +77,9 @@ def main():
         import kvikio
 
         def read(o, buf):
-            with kvikio.RemoteFile.open_http(o["url"]) as f:
+            # KvikIO's own presigned-URL endpoint; pass the size so it does not probe the object
+            # with a request the GET-only signature does not cover (403).
+            with kvikio.RemoteFile.open_s3_presigned_url(o["url"], nbytes=o["size"]) as f:
                 return f.read(buf)
     elif a.mode == "cufile":
         import kvikio
@@ -95,8 +97,8 @@ def main():
         def read(o, buf):
             r = client.get_object(o["bucket"], o["key"])
             host = torch.frombuffer(bytearray(r.read()), dtype=torch.uint8)
-            dev = torch.as_tensor(buf, device=f"cuda:{a.device}")
-            dev.copy_(host.cuda(a.device))
+            # Copy host -> the oracle's device buffer directly (no second device allocation).
+            torch.as_tensor(buf, device=f"cuda:{a.device}").copy_(host)
             return host.numel()
 
     out = open(a.out, "a", newline="") if a.out else None
