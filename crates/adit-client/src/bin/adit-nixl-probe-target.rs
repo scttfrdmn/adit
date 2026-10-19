@@ -39,6 +39,15 @@ struct Args {
     pump_idle_us: u64,
     #[arg(long, default_value_t = 0)]
     nixl_progress_delay_us: u64,
+    /// write: the initiator pushes (default). read: this side pulls from the initiator's DRAM
+    /// (client-initiated READ, for EFA without hardware RDMA write).
+    #[arg(long, default_value = "write")]
+    op: String,
+    /// Reads in flight for --op read.
+    #[arg(long, default_value_t = 32)]
+    concurrency: usize,
+    #[arg(long, default_value_t = 8)]
+    chunk_mib: u64,
 }
 
 #[tokio::main]
@@ -74,10 +83,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     writeln!(conn, "{dest}")?;
     conn.write_all(&(md.len() as u64).to_le_bytes())?;
     conn.write_all(&md)?;
-    let cov = tracker.wait(0, 0..len, tokio::time::Instant::now() + Duration::from_secs(a.timeout_s)).await;
+    let mut rd = BufReader::new(conn.try_clone()?);
+    let cov = if a.op == "read" {
+        // The initiator answers with its metadata and the DRAM region holding the payload.
+        let mut line = String::new();
+        rd.read_line(&mut line)?;
+        let src: Dest = line.trim().parse()?;
+        let mut n = [0u8; 8];
+        std::io::Read::read_exact(&mut rd, &mut n)?;
+        let mut md = vec![0u8; u64::from_le_bytes(n) as usize];
+        std::io::Read::read_exact(&mut rd, &mut md)?;
+        let remote = agent.load_remote(&md)?;
+        let chunk = (a.chunk_mib << 20) as usize;
+        let n_chunks = (len as usize).div_ceil(chunk);
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let failed = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|sc| {
+            for _ in 0..a.concurrency {
+                sc.spawn(|| {
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if i >= n_chunks {
+                            break;
+                        }
+                        let off = (i * chunk) as u64;
+                        let l = chunk.min(len as usize - i * chunk);
+                        if let Err(e) =
+                            agent.read(dest.addr + off, dest.dev, &remote, src.addr + off, l, Duration::from_secs(30))
+                        {
+                            eprintln!("# read chunk {i}: {e}");
+                            failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                });
+            }
+        });
+        let mut c = adit_proto::Coverage::default();
+        if failed.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+            c.insert(0..len);
+        }
+        c
+    } else {
+        tracker.wait(0, 0..len, tokio::time::Instant::now() + Duration::from_secs(a.timeout_s)).await
+    };
     let secs = t0.elapsed().as_secs_f64();
     let m = win.stop();
-    let mut rd = BufReader::new(conn.try_clone()?);
     let mut line = String::new();
     rd.read_line(&mut line)?;
     let theirs = line.split_whitespace().nth(1).unwrap_or_default().to_string();
@@ -86,9 +136,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let complete = cov.is_complete(0..len);
     let pass = complete && ours == theirs;
     let verdict = format!(
-        "{} bytes={len} covered={} notifications={} secs_to_last_notif={secs:.3} gpu_composite={ours} init_composite={theirs} \
+        "{} op={} bytes={len} covered={} notifications={} secs_to_last_notif={secs:.3} gpu_composite={ours} init_composite={theirs} \
          host_cpu_s={:?} proc_cpu_s={:?} efa_rx_bytes={:?} mem_read_bytes={:?} mem_write_bytes={:?} perf={:?}",
         if pass { "PASS" } else { "FAIL" },
+        a.op,
         cov.covered(),
         tracker.notifications.load(std::sync::atomic::Ordering::Relaxed),
         m.host_cpu_s,

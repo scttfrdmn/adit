@@ -39,6 +39,10 @@ struct Args {
     concurrency: usize,
     #[arg(long, default_value_t = 1)]
     seed: u64,
+    /// write: push into the target (default). read: hand the target our metadata and region and
+    /// let it pull (client-initiated READ).
+    #[arg(long, default_value = "write")]
+    op: String,
     /// Part size of the composite digest (must match the target).
     #[arg(long, default_value_t = 8)]
     part_mib: u64,
@@ -98,6 +102,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     eprintln!("# remote agent={remote} dest={dest} metadata_bytes={}", md.len());
 
+    if a.op == "read" {
+        let md = writer.local_metadata()?;
+        let (ptr, plen) = pool.region();
+        writeln!(conn, "{}", Dest { addr: ptr as u64, len: plen as u64, dev: 0 })?;
+        conn.write_all(&(md.len() as u64).to_le_bytes())?;
+        conn.write_all(&md)?;
+        writeln!(conn, "composite {composite} bytes {total} secs 0 failed 0")?;
+        println!("INIT op=read bytes={total} chunk={chunk} composite={composite} (target pulls)");
+        let mut verdict = String::new();
+        rd.read_line(&mut verdict)?;
+        println!("TARGET {}", verdict.trim());
+        if !verdict.contains("PASS") {
+            return Err("probe failed".into());
+        }
+        return Ok(());
+    }
     let t0 = Instant::now();
     let results: Vec<_> = futures::stream::iter(held.iter().map(|(i, n, s)| {
         let (writer, remote) = (&writer, &remote);
