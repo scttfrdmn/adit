@@ -65,6 +65,10 @@ struct Args {
     /// NIXL progress-thread delay between polls, microseconds; 0 = NIXL default busy poll (#17).
     #[arg(long, default_value_t = 0)]
     nixl_progress_delay_us: u64,
+    /// Accept a run whose bytes were not placed by the NIC (EFA emulating RDMA through the host,
+    /// #26). Without it such a run exits non-zero even when the oracle passes.
+    #[arg(long)]
+    allow_emulated: bool,
 }
 
 #[derive(Deserialize)]
@@ -169,6 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (mut wall, mut bytes, mut s3_requests, mut objects) = (Duration::ZERO, 0u64, 0u64, 0usize);
         let (mut host_cpu, mut proc_cpu, mut efa_rx) = (0f64, 0f64, 0u64);
         let (mut mem_rd, mut mem_wr, mut mem_ok) = (0u64, 0u64, true);
+        let mut placed: Option<u64> = Some(0);
         let (mut bad, mut partial, mut notes) = (0usize, 0usize, Vec::<String>::new());
         let mut perf_note = String::new();
         for wave in &waves {
@@ -190,6 +195,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             host_cpu += m.host_cpu_s.unwrap_or(f64::NAN);
             proc_cpu += m.proc_cpu_s.unwrap_or(f64::NAN);
             efa_rx += m.efa_rx_bytes.unwrap_or(0);
+            placed = placed.zip(m.nic_placed_bytes).map(|(a, b)| a + b);
             match (m.mem_read_bytes, m.mem_write_bytes) {
                 (Some(r), Some(w)) => {
                     mem_rd += r;
@@ -224,6 +230,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         any_bad |= bad > 0 || partial > 0;
+        let placement = adit_client::counters::placement(placed, bytes);
+        notes
+            .push(format!("placement={placement} nic_placed_bytes={}", placed.map_or("n/a".into(), |p| p.to_string())));
+        if placement == "emulated" && !a.allow_emulated {
+            eprintln!("run {run}: bytes were not placed by the NIC (placement=emulated); see #26");
+            any_bad = true;
+        }
         let t = client.tracker();
         let stray = t.stray.load(std::sync::atomic::Ordering::Relaxed);
         if stray > 0 {

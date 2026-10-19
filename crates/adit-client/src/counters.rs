@@ -59,6 +59,11 @@ pub struct Measured {
     pub proc_cpu_s: Option<f64>,
     /// Bytes the EFA device(s) received by RDMA write, if the counter exists.
     pub efa_rx_bytes: Option<u64>,
+    /// Bytes the NIC itself placed into registered memory by one-sided RDMA (write receive plus
+    /// read), if the device exposes those counters. Compared with the payload, this is the per-row
+    /// evidence that no host copy happened (#26): an EFA that emulates RDMA moves the same bytes
+    /// as two-sided receives and leaves these at zero.
+    pub nic_placed_bytes: Option<u64>,
     pub efa: BTreeMap<String, u64>,
     pub mem_read_bytes: Option<u64>,
     pub mem_write_bytes: Option<u64>,
@@ -95,9 +100,13 @@ impl Window {
     }
 
     pub fn stop(self) -> Measured {
+        // Close the process window before the host window (start opened host first), so the host
+        // window encloses the process window and host CPU cannot read below process CPU (#27).
+        let proc1 = proc_cpu_jiffies();
+        let host1 = host_cpu_jiffies();
         let mut m = Measured {
-            host_cpu_s: host_cpu_jiffies().zip(self.host0).map(|(b, a)| (b - a) as f64 / CLK_TCK),
-            proc_cpu_s: proc_cpu_jiffies().zip(self.proc0).map(|(b, a)| (b - a) as f64 / CLK_TCK),
+            host_cpu_s: host1.zip(self.host0).map(|(b, a)| b.saturating_sub(a) as f64 / CLK_TCK),
+            proc_cpu_s: proc1.zip(self.proc0).map(|(b, a)| b.saturating_sub(a) as f64 / CLK_TCK),
             ..Default::default()
         };
         let efa1 = efa_counters();
@@ -105,6 +114,8 @@ impl Window {
             m.efa.insert(k.clone(), v.saturating_sub(*self.efa0.get(k).unwrap_or(&0)));
         }
         m.efa_rx_bytes = m.efa.get("rdma_write_recv_bytes").or_else(|| m.efa.get("rx_bytes")).copied();
+        let (w, r) = (m.efa.get("rdma_write_recv_bytes").copied(), m.efa.get("rdma_read_bytes").copied());
+        m.nic_placed_bytes = if w.is_none() && r.is_none() { None } else { Some(w.unwrap_or(0) + r.unwrap_or(0)) };
         match self.perf {
             None => m.perf_note = "perf disabled".into(),
             Some((mut child, path)) => {
@@ -136,5 +147,45 @@ impl Window {
             }
         }
         m
+    }
+}
+
+/// How the payload reached registered memory, from the NIC counters (#26).
+pub fn placement(nic_placed: Option<u64>, payload: u64) -> &'static str {
+    match nic_placed {
+        None => "unknown",
+        Some(n) if n >= payload => "nic",
+        Some(_) => "emulated",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn placement_verdicts() {
+        assert_eq!(placement(None, 10), "unknown");
+        assert_eq!(placement(Some(10), 10), "nic");
+        assert_eq!(placement(Some(3), 10), "emulated");
+        assert_eq!(placement(Some(0), 10), "emulated");
+    }
+
+    /// Host CPU over a window must not read below this process's own CPU (#27). Linux only:
+    /// elsewhere both counters are unavailable.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn host_cpu_encloses_process_cpu() {
+        let w = Window::start("");
+        let t = std::time::Instant::now();
+        let mut x = 0u64;
+        while t.elapsed() < std::time::Duration::from_millis(400) {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1);
+        }
+        std::hint::black_box(x);
+        let m = w.stop();
+        let (h, p) = (m.host_cpu_s.unwrap(), m.proc_cpu_s.unwrap());
+        assert!(p >= 0.3, "busy loop of 0.4 s measured {p} s of process CPU");
+        assert!(h + 0.02 >= p, "host {h} s < process {p} s");
     }
 }
