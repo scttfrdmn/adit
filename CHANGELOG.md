@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - client knobs for the notification pump's back-off and NIXL's progress-thread delay (#17);
   - a write-probe health gate (`hack/health.sh`) that `hack/g0c.sh` runs before the ladder and every 5 rungs.
 
+- **Client-initiated READ in the probe pair** (`--op read`). This is the design's fallback for EFA without hardware RDMA write. On g6e it completes correctly, but it is emulated as well (#20).
+- **The capability matrix records hardware RDMA into VRAM from EFA counters.** `fi_info` lists `FI_RMA` even where libfabric emulates it, so its flags are not evidence (#20).
+
 ### Fixed
 
 - **NIXL registrations of 16 GiB or more failed on the proxy** (#19). The EFA installer runs with
