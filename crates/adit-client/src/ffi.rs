@@ -82,6 +82,7 @@ fn open(cfg: &str) -> Result<Handle, String> {
                 stripe: c.stripe,
                 notif_grace: Duration::from_millis(c.notif_grace_ms),
                 timeout: Duration::from_secs(c.timeout_s),
+                pump_idle: Duration::from_micros(50),
             },
             Dest { addr: c.addr, len: c.len, dev: c.device },
             agent.clone(),

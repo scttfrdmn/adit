@@ -62,10 +62,25 @@ impl ClientAgent {
         dev: u64,
         vram: bool,
     ) -> Result<Arc<Self>, NixlFailure> {
+        Self::with_progress_delay(name, backend, addr, len, dev, vram, 0)
+    }
+
+    /// As [`ClientAgent::new`], with NIXL's progress-thread delay between polls. NIXL's default of 0
+    /// busy-polls for the agent's lifetime; #17 measures whether that is the client's core.
+    pub fn with_progress_delay(
+        name: &str,
+        backend: &str,
+        addr: u64,
+        len: usize,
+        dev: u64,
+        vram: bool,
+        progress_delay_us: u64,
+    ) -> Result<Arc<Self>, NixlFailure> {
         if nixl_sys::is_stub() {
             return Err(NixlFailure("built against the NIXL stub API".into()));
         }
-        let cfg = AgentConfig { thread_sync: ThreadSync::Rw, ..AgentConfig::default() };
+        let cfg =
+            AgentConfig { thread_sync: ThreadSync::Rw, pthr_delay_us: progress_delay_us, ..AgentConfig::default() };
         let agent = Agent::new_configured(name, &cfg).map_err(nixl)?;
         let (_mems, params) = agent.get_plugin_params(backend).map_err(nixl)?;
         let b = agent.create_backend(backend, &params).map_err(nixl)?;

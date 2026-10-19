@@ -126,6 +126,7 @@ async fn rig(dest_len: usize, n_proxies: usize, stripe: bool, attempts: u32) -> 
             stripe,
             notif_grace: Duration::from_millis(500),
             timeout: Duration::from_secs(30),
+            pump_idle: Duration::from_micros(50),
         },
         Dest { addr: BASE, len: dest_len as u64, dev: 0 },
         Arc::new(ChannelSource(Mutex::new(rx))),

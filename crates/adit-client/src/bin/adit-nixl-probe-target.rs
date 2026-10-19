@@ -35,6 +35,10 @@ struct Args {
     perf_events: String,
     #[arg(long, default_value_t = 120)]
     timeout_s: u64,
+    #[arg(long, default_value_t = 20)]
+    pump_idle_us: u64,
+    #[arg(long, default_value_t = 0)]
+    nixl_progress_delay_us: u64,
 }
 
 #[tokio::main]
@@ -47,11 +51,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gpu = Gpu::new(a.device)?;
     let buf = gpu.alloc(len as usize)?;
     let dest = Dest { addr: buf.addr(), len, dev: a.device as u64 };
-    let agent = ClientAgent::new(&a.agent_name, &a.backend, dest.addr, len as usize, dest.dev, true)?;
+    let agent = ClientAgent::with_progress_delay(
+        &a.agent_name,
+        &a.backend,
+        dest.addr,
+        len as usize,
+        dest.dev,
+        true,
+        a.nixl_progress_delay_us,
+    )?;
     let md = agent.metadata()?;
     let tracker = Arc::new(Tracker::default());
     tracker.open(0);
-    let _pump = tracker.pump(agent.clone(), Duration::from_micros(20));
+    let _pump = tracker.pump(agent.clone(), Duration::from_micros(a.pump_idle_us));
     eprintln!("# gpu={} dest={dest} metadata_bytes={} listening on {}", gpu.name(), md.len(), a.listen);
 
     let listener = TcpListener::bind(&a.listen)?;

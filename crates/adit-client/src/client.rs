@@ -32,6 +32,8 @@ pub struct Config {
     pub notif_grace: Duration,
     /// Whole-request HTTP timeout.
     pub timeout: Duration,
+    /// Notification pump back-off when no notification is waiting (#17).
+    pub pump_idle: Duration,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -93,7 +95,7 @@ impl Client {
         let http =
             reqwest::Client::builder().timeout(cfg.timeout).build().map_err(|e| GetError::Invalid(e.to_string()))?;
         let tracker = Arc::new(Tracker::default());
-        let pump = tracker.pump(notifs, Duration::from_micros(50));
+        let pump = tracker.pump(notifs, cfg.pump_idle);
         // Request ids start from the clock so a restarted client never reuses a live id.
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -77,6 +77,14 @@ if ! done_ efa; then
 fi
 export PATH=/opt/amazon/efa/bin:$PATH
 
+# The EFA installer's own limits file is skipped (--skip-limit-conf), which left memlock at the
+# distro default (~15 GiB on c8gn) and refused registrations of >= 16 GiB (#19). Pinned memory
+# for NIXL registration is unbounded by design; new login sessions pick this up.
+if ! done_ memlock; then
+    echo '* - memlock unlimited' >/etc/security/limits.d/90-adit-memlock.conf
+    mark memlock
+fi
+
 CUDA=""
 if [[ $ROLE == client ]]; then
     CUDA=$(ls -d /usr/local/cuda 2>/dev/null)
@@ -184,6 +192,7 @@ done
     echo "driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)"
     echo "cuda=$(nvcc --version 2>/dev/null | awk -F'release ' '/release/{print $2}' | cut -d, -f1)"
     echo "adit=$(cd $SRC/adit && git rev-parse --short HEAD)"
+    echo "memlock_new_sessions=$(sudo -u "$ADIT_USER" -i bash -c 'ulimit -l')"
 } >"$STATE/versions"
 cat "$STATE/versions"
 log "install complete"
