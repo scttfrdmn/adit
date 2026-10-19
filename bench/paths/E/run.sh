@@ -26,4 +26,7 @@ cold
 adit-get --proxies "$PROXIES" --plan "$PLAN" --agent-name "adit-$WORKLOAD-$$" --buffer-gib "$BUF_GIB" \
     --chunk-mib "$CHUNK_MIB" --concurrency "$CONCURRENCY" "${stripe[@]}" --runs "$RUNS" \
     --nixl-progress-delay-us "$PROGRESS_US" "${META[@]}" --out "$OUT" 2>&1 | grep -E '^E,|rror'
-log "done: $OUT"
+rc=${PIPESTATUS[0]}
+log "done: $OUT (adit-get exit $rc)"
+# A partial transfer or an oracle mismatch must fail the runner, not just the row.
+exit "$rc"
