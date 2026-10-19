@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`bench/paths/interleave.sh`** runs path arms in a rotated order every cycle, so time-of-session effects (S3 warm-up on a repeatedly read key) spread across arms instead of confounding them (#45).
+- **`bench/paths/A/stages.sh`** splits path A into the s5cmd download (its own wall and rusage) and the local load, for per-stage attribution.
+
 - **Path D sizing by target throughput.** `bench/paths/D/run.sh sizing` prints the PERSISTENT_2 configuration and $/hr needed to feed a client at a given rate. `plan` and `create` size for the larger of the working set and `TARGET_GBPS`, so path D runs at its best (law 3), not at the 4.8 TiB minimum. Path C pins lith (`LITH_VERSION`, default v1.18.1).
 
 - **Path runners A–E** with one contract (`bench/paths/README.md`):
