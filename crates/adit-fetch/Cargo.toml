@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "adit-fetch"
+description = "S3 ranged-GET engine on the AWS CRT: presigned URLs into caller-supplied buffers. No NIXL."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+default = ["crt"]
+crt = ["dep:mountpoint-s3-crt"]
+# An in-process S3-shaped HTTP server for tests: ranged GETs, injected 503s, per-range delays.
+mock = ["dep:axum", "tokio/net"]
+
+[dependencies]
+mountpoint-s3-crt = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+futures.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+adit-fetch = { path = ".", features = ["mock"] }
+sha2.workspace = true

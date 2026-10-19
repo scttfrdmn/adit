@@ -1,0 +1,1 @@
+instance,region,az,ami,driver,cuda,efa_installer,libfabric,nixl,gpu,gpus,efa_devices,fi_efa_rma,fi_efa_hmem_cuda,nixlbench_vram_write_gbps,nixlbench_vram_read_gbps,gdscheck_gds,gdscheck_efa,usd_per_hr,commit,notes

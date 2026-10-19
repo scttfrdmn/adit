@@ -1,0 +1,6 @@
+# G0a step 2: one 1 GiB object (T2 generator, seed 1) S3 -> adit-proxy -> NIXL RDMA write -> g7e GPU0; same boxes as g0c.csv
+# host_mem_*: unavailable (no uncore_imc PMU)
+path,workload,run,cold,client_instance,proxy_instance,proxies,chunk_bytes,concurrency,stripe,objects,bytes,wall_s,gbps,host_cpu_s,proc_cpu_s,host_mem_read_bytes,host_mem_write_bytes,efa_rx_bytes,s3_bytes,s3_requests,usd,oracle,config,commit,notes
+E,G0a-1GiB,1,1,g7e.12xlarge,c8gn.16xlarge,1,8388608,8,0,1,1073741824,0.490,17.513,0.50,0.50,unavailable,unavailable,1073741824,1073741824,128,,ok,backend=LIBFABRIC;chunk=8388608;stripe=false;concurrency=8;buffer_gib=2;waves=1;gpu=NVIDIA RTX PRO 6000 Blackwell Server Edition,c438de4,perf disabled
+E,G0a-1GiB,2,1,g7e.12xlarge,c8gn.16xlarge,1,8388608,8,0,1,1073741824,0.472,18.211,0.47,0.47,unavailable,unavailable,1073741824,1073741824,128,,ok,backend=LIBFABRIC;chunk=8388608;stripe=false;concurrency=8;buffer_gib=2;waves=1;gpu=NVIDIA RTX PRO 6000 Blackwell Server Edition,c438de4,perf disabled
+E,G0a-1GiB,3,1,g7e.12xlarge,c8gn.16xlarge,1,8388608,8,0,1,1073741824,0.456,18.836,0.46,0.46,unavailable,unavailable,1073741824,1073741824,128,,ok,backend=LIBFABRIC;chunk=8388608;stripe=false;concurrency=8;buffer_gib=2;waves=1;gpu=NVIDIA RTX PRO 6000 Blackwell Server Edition,c438de4,perf disabled

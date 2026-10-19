@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "adit-proto"
+description = "adit wire protocol: control-plane headers, completion notifications, coverage accounting"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true

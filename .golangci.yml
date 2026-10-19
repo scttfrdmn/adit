@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  settings:
+    staticcheck:
+      # Keep substantive checks (SA*, S1*, ST1*); drop the "quickfix" (QF*)
+      # category, which is purely mechanical style refactors.
+      checks:
+        - all
+        - -QF1001
+        - -QF1002
+        - -QF1003
+        - -QF1004
+        - -QF1005
+        - -QF1006
+        - -QF1007
+        - -QF1008
+        - -QF1009
+        - -QF1010
+        - -QF1011
+        - -QF1012
+
+formatters:
+  enable:
+    - gofmt

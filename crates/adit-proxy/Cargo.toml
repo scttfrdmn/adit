@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "adit-proxy"
+description = "adit proxy: S3-shaped HTTP control endpoint; fetches S3 ranges and RDMA-writes them into a client's registered GPU buffer through NIXL"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Build nixl-sys against its stub API (CI, laptops). Binaries refuse to serve on a stub build.
+stub-api = ["nixl-sys/stub-api"]
+
+[dependencies]
+adit-proto.workspace = true
+adit-fetch.workspace = true
+nixl-sys.workspace = true
+axum.workspace = true
+clap.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+sha2.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+adit-fetch = { workspace = true, features = ["mock"] }
+reqwest.workspace = true

@@ -53,7 +53,7 @@ best known configuration. Where adit loses, the results say so.
 ## Build
 
 ```sh
-make build   # Rust workspace (NIXL stub API unless NIXL_PREFIX is set) and aditctl
+make build   # Rust workspace (NIXL stub API) and aditctl
 make test
 make lint
 ```

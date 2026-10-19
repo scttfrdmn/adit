@@ -13,3 +13,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the nine laws, and a single CI gate (`.github/workflows/gate.yml`) that runs the Rust tree
   (`cargo fmt`, `clippy`, `cargo test` against the NIXL stub API) and the Go tree (`go vet`,
   `golangci-lint`, `go test -race`) plus the bench CSV schema check.
+- **The engine, end to end on a loopback data plane** (#5). `adit-fetch` issues ranged GETs
+  against presigned URLs through the AWS CRT into caller buffers. `adit-proxy` turns one
+  `GET /{bucket}/{key}` into chunked fetches, each RDMA-written by NIXL to its offset in the
+  client's registered buffer with a completion notification. `adit-client` registers the GPU
+  buffer, stripes objects across proxies, and accounts completion from notifications. A get
+  succeeds only if every proxy answered `200` and the notifications cover exactly the requested
+  bytes; otherwise it returns `Partial` with the covered and missing ranges. The tests cover a
+  proxy killed mid-transfer, persistent and transient S3 503s, out-of-order fetches and writes,
+  and ten-run identity over a scaled-down T2.
+- **S3 request counts include the CRT's own retries.** The CRT retries 503s internally. Counting
+  one request per range under-reported them, and the tests caught it. Requests are now counted
+  from the CRT's per-request telemetry, failed attempts included, and the tests assert the count
+  equals what the server saw.
+- **GPU oracle.** A CUDA kernel compiled at runtime through NVRTC computes the SHA-256 of every
+  part of a device buffer in parallel. The composite of those part digests is compared with
+  S3's stored multipart `ChecksumSHA256` and with the generation manifest (design #1, item 1).
+- **H-zero counters** around every transfer window: host and process CPU-seconds, EFA device
+  counters, and memory-controller traffic through `perf` where the instance exposes it.
+  Otherwise the column reads `unavailable`, never a guess.
+- **Binaries for the boxes:** `adit-proxy`; `adit-get` (path E: results rows with counters);
+  `adit-load` (path A's GPU half, with the copy step inside the measured window); and the G0a
+  probe pair `adit-nixl-probe-init` / `adit-nixl-probe-target`. Every binary refuses to measure
+  when built against the NIXL stub.
+- **`aditctl`** (Go, no cgo):
+  - `gen`: deterministic toy workloads uploaded multipart with SHA-256 checksums; refuses unless
+    S3's composite matches.
+  - `presign` and `region-check`: both refuse cross-region I/O.
+  - `price`: on-demand from the Price List API, spot from history.
+  - `fleet up/down/status`: through spawn. Candidates are tried in ranked order (region, AZ,
+    spot or on-demand) because GPU capacity is scarce. Each fleet gets a self-referencing EFA
+    security group shared by proxies and clients of different instance types.
+  - `teardown`: verified via `spawn list`.
+  - `report --check`: the CSV schema plus the mechanically checkable laws (configuration and
+    commit on every row; counters on every adit row).
+- **`hack/install.sh`** bootstraps a proxy or client box: EFA, NIXL `v1.2.0` with the LIBFABRIC
+  plugin, nixlbench, Rust, and the adit build against the real NIXL. **`hack/probe.sh`** collects
+  the single-box facts for the capability matrix.
+
+### Removed
+
+- The two planning documents committed by mistake in the first commit. The project document
+  lives outside the repository and is linked from the pinned design issue.
