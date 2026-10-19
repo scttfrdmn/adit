@@ -174,7 +174,7 @@ if [[ $ROLE == client ]] && ! done_ pathtools; then
     fi
     python3 -m venv /opt/adit-venv || fail venv
     V=/opt/adit-venv/bin/pip
-    $V install -q --upgrade pip maturin || fail pip
+    $V install -q --upgrade pip maturin patchelf || fail pip
     cu=$(nvcc --version 2>/dev/null | sed -n 's/.*release \([0-9]*\)\..*/\1/p')
     $V install -q "cupy-cuda${cu}x" || $V install -q cupy-cuda12x || fail cupy
     $V install -q "kvikio-cu${cu}" || $V install -q kvikio-cu12 || fail kvikio
@@ -196,7 +196,8 @@ pkgs="-p adit-proxy"
 sudo -u "$ADIT_USER" -H bash -c "cd $SRC/adit && NIXL_PREFIX=$NIXL_PREFIX NIXL_NO_STUBS_FALLBACK=1 ~/.cargo/bin/cargo build --release $pkgs" || fail "adit build (real NIXL)"
 if [[ $ROLE == client ]]; then
     # adit-py into the path-tools venv, against the real NIXL.
-    sudo -u "$ADIT_USER" -H bash -c "cd $SRC/adit/crates/adit-py && NIXL_PREFIX=$NIXL_PREFIX NIXL_NO_STUBS_FALLBACK=1 PATH=\$HOME/.cargo/bin:\$PATH /opt/adit-venv/bin/maturin build -q --release -o /tmp/adit-wheels" || fail "adit-py build"
+    rm -rf /tmp/adit-wheels
+    sudo -u "$ADIT_USER" -H bash -c "cd $SRC/adit/crates/adit-py && NIXL_PREFIX=$NIXL_PREFIX NIXL_NO_STUBS_FALLBACK=1 PATH=\$HOME/.cargo/bin:\$PATH /opt/adit-venv/bin/maturin build -q --release --auditwheel skip -o /tmp/adit-wheels" || fail "adit-py build"
     /opt/adit-venv/bin/pip install -q --force-reinstall /tmp/adit-wheels/adit-*.whl || fail "adit-py install"
 fi
 for b in adit-proxy adit-nixl-probe-init adit-get adit-load adit-nixl-probe-target adit-fetch-bench; do
