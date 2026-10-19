@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **E:** `adit-get`.
   
   B, C and D share one GPU loader (`bench/paths/lib/gpuload.py`) with the same counter window and GPU oracle as E. The client bootstrap installs s5cmd and a Python env with CuPy, KvikIO, PyTorch, the S3 Connector and adit-py.
+- **Per-row NIC placement verdict** (#26). `adit-get` compares the NIC's one-sided placement
+  counters (`rdma_write_recv_bytes` + `rdma_read_bytes`) with the payload and writes
+  `placement=nic|emulated|unknown` into every row. On `emulated` it exits non-zero unless
+  `--allow-emulated` is given. The GPU oracle checks bytes, not how they arrived; on g6e every
+  emulated transfer passed it while copying through host memory (#20, #25).
 
 - **Instruments for the G0-close round:**
   - per-chunk stage histograms on `/metrics`: slot wait, fetch, write wait and write, so pipeline throughput can be split by stage (#18);
@@ -30,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The capability matrix records hardware RDMA into VRAM from EFA counters.** `fi_info` lists `FI_RMA` even where libfabric emulates it, so its flags are not evidence (#20).
 
 ### Fixed
+
+- **Host CPU could read below process CPU** (#27). The counter window now closes the process
+  sample before the host sample, so the host window encloses the process window, and deltas
+  saturate. A Linux test busy-loops 0.4 s and checks the two counters agree.
 
 - **NIXL registrations of 16 GiB or more failed on the proxy** (#19). The EFA installer runs with
   `--skip-limit-conf`, which left `memlock` at the distro default of about 15 GiB.
