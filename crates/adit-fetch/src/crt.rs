@@ -39,6 +39,29 @@ pub struct CrtConfig {
     pub network_interfaces: Vec<String>,
     /// Bucket region. The CRT requires one; presigned URLs carry their own endpoint.
     pub region: String,
+    /// How each ranged GET is issued (#18 A/B). `Default` sends the request as-is and buffers the
+    /// body; `GetObject` lets the CRT split the range into its own parts and stream them.
+    pub meta_type: MetaType,
+    /// CRT part size for `MetaType::GetObject`.
+    pub part_size: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MetaType {
+    #[default]
+    Default,
+    GetObject,
+}
+
+impl std::str::FromStr for MetaType {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "default" => Ok(MetaType::Default),
+            "get-object" => Ok(MetaType::GetObject),
+            _ => Err(format!("meta type {s:?}: want default or get-object")),
+        }
+    }
 }
 
 impl Default for CrtConfig {
@@ -49,6 +72,8 @@ impl Default for CrtConfig {
             event_loop_threads: None,
             network_interfaces: vec![],
             region: "us-east-1".into(),
+            meta_type: MetaType::Default,
+            part_size: None,
         }
     }
 }
@@ -56,6 +81,7 @@ impl Default for CrtConfig {
 pub struct CrtSource {
     allocator: Allocator,
     client: Client,
+    meta_type: MetaType,
     // Kept alive for the client's lifetime.
     _event_loop_group: EventLoopGroup,
 }
@@ -81,6 +107,9 @@ impl CrtSource {
         let mut config = ClientConfig::new();
         config.signing_config(init_signing_config(&cfg.region, anonymous, None, None, None));
         config.client_bootstrap(bootstrap).throughput_target_gbps(cfg.throughput_target_gbps).region(&cfg.region);
+        if let Some(p) = cfg.part_size {
+            config.part_size(p);
+        }
         if let Some(n) = cfg.max_connections {
             config.max_active_connections_override(n);
         }
@@ -88,7 +117,7 @@ impl CrtSource {
             config.network_interface_names(cfg.network_interfaces.clone());
         }
         let client = Client::new(&allocator, config).map_err(crt)?;
-        Ok(Self { allocator, client, _event_loop_group: elg })
+        Ok(Self { allocator, client, meta_type: cfg.meta_type, _event_loop_group: elg })
     }
 }
 
@@ -148,6 +177,10 @@ impl RangeSource for CrtSource {
                 return Ok(FetchStats::default());
             }
             let (msg, uri) = request_for(&self.allocator, url, &range).map_err(|e| e.after(0))?;
+            let meta_type = self.meta_type;
+            // `Default` reports body offsets from the start of the response; `GetObject` reports
+            // them in object coordinates (verified against the mock in tests/crt_mock.rs).
+            let base = if meta_type == MetaType::GetObject { range.start } else { 0 };
             let start = Instant::now();
             let landed = Arc::new(AtomicU64::new(0));
             let first_byte = Arc::new(Mutex::new(None::<Duration>));
@@ -162,7 +195,13 @@ impl RangeSource for CrtSource {
 
             let start_req = || -> Result<MetaRequest, FetchError> {
                 let mut opts = MetaRequestOptions::new();
-                opts.message(msg).endpoint(uri).request_type(MetaRequestType::Default).operation_name("GetObject");
+                opts.message(msg)
+                    .endpoint(uri)
+                    .request_type(match meta_type {
+                        MetaType::Default => MetaRequestType::Default,
+                        MetaType::GetObject => MetaRequestType::GetObject,
+                    })
+                    .operation_name("GetObject");
                 {
                     let sent = sent.clone();
                     opts.on_telemetry(move |_m| {
@@ -178,7 +217,10 @@ impl RangeSource for CrtSource {
                     opts.on_body(move |offset, buf| {
                         let d = d;
                         // A Default meta request reports offsets within the response body.
-                        let off = offset as usize;
+                        let Some(off) = offset.checked_sub(base).map(|o| o as usize) else {
+                            out_of_range.lock().unwrap().get_or_insert(offset);
+                            return;
+                        };
                         let n = buf.len();
                         if off.checked_add(n).is_none_or(|end| end > d.len) {
                             out_of_range.lock().unwrap().get_or_insert(offset);

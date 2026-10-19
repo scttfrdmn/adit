@@ -43,6 +43,12 @@ struct Args {
     /// Seconds before an in-progress RDMA write is reported failed.
     #[arg(long, default_value_t = 30)]
     write_timeout_s: u64,
+    /// CRT request type: default | get-object (#18).
+    #[arg(long, default_value = "default")]
+    meta_type: adit_fetch::crt::MetaType,
+    /// CRT part size for get-object, MiB.
+    #[arg(long)]
+    part_mib: Option<usize>,
     /// Cap on outstanding RDMA writes (0 = one per slot). See #18.
     #[arg(long, default_value_t = 0)]
     write_inflight: usize,
@@ -65,6 +71,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         throughput_target_gbps: a.throughput_gbps,
         max_connections: a.max_connections,
         region: a.region.clone(),
+        meta_type: a.meta_type,
+        part_size: a.part_mib.map(|m| m << 20),
         ..CrtConfig::default()
     })?;
     let app = Arc::new(App {
@@ -79,6 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             throughput_target_gbps: a.throughput_gbps,
             max_connections: a.max_connections.unwrap_or(0) as u64,
             write_inflight: a.write_inflight as u64,
+            meta_type: format!("{:?}", a.meta_type),
             stub: false,
         },
         write_inflight: (a.write_inflight > 0).then(|| tokio::sync::Semaphore::new(a.write_inflight)),

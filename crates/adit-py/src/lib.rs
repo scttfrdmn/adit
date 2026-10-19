@@ -130,6 +130,7 @@ impl Client {
             stripe,
             notif_grace: Duration::from_secs(2),
             timeout: Duration::from_secs(3600),
+            pump_idle: Duration::from_micros(50),
         };
         let inner = rt.block_on(async {
             let c = adit_client::Client::new(cfg, Dest { addr: ptr, len: length, dev: device }, a.clone())?;

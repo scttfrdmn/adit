@@ -59,6 +59,12 @@ struct Args {
     out: Option<String>,
     #[arg(long, default_value_t = 2000)]
     notif_grace_ms: u64,
+    /// Notification pump idle back-off, microseconds (#17).
+    #[arg(long, default_value_t = 50)]
+    pump_idle_us: u64,
+    /// NIXL progress-thread delay between polls, microseconds; 0 = NIXL default busy poll (#17).
+    #[arg(long, default_value_t = 0)]
+    nixl_progress_delay_us: u64,
 }
 
 #[derive(Deserialize)]
@@ -112,7 +118,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gpu = Gpu::new(a.device)?;
     let mut buf = gpu.alloc(cap as usize)?;
     let dest = Dest { addr: buf.addr(), len: cap, dev: a.device as u64 };
-    let agent = ClientAgent::new(&a.agent_name, &a.backend, dest.addr, cap as usize, dest.dev, true)?;
+    let agent = ClientAgent::with_progress_delay(
+        &a.agent_name,
+        &a.backend,
+        dest.addr,
+        cap as usize,
+        dest.dev,
+        true,
+        a.nixl_progress_delay_us,
+    )?;
     let md = agent.metadata()?;
     let chunk = a.chunk_mib << 20;
     let client = Client::new(
@@ -123,6 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             stripe: a.stripe,
             notif_grace: Duration::from_millis(a.notif_grace_ms),
             timeout: Duration::from_secs(3600),
+            pump_idle: Duration::from_micros(a.pump_idle_us),
         },
         dest,
         agent.clone(),
@@ -252,13 +267,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         row.set(
             "config",
             format!(
-                "backend={};chunk={chunk};stripe={};concurrency={};buffer_gib={};waves={};gpu={}",
+                "backend={};chunk={chunk};stripe={};concurrency={};buffer_gib={};waves={};gpu={};pump_idle_us={};nixl_progress_delay_us={}",
                 a.backend,
                 a.stripe,
                 a.concurrency,
                 a.buffer_gib,
                 waves.len(),
-                gpu.name()
+                gpu.name(),
+                a.pump_idle_us,
+                a.nixl_progress_delay_us
             ),
         )?;
         row.set("notes", notes.join("; "))?;

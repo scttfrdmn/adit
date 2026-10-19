@@ -28,6 +28,20 @@ pub struct Transfer {
     pub chunk: u64,
 }
 
+/// One chunk's life, nanoseconds from the start of its transfer. Zero where a stage never ran.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ChunkTiming {
+    pub offset: u64,
+    pub len: u64,
+    pub requests: u32,
+    pub slot_ns: u64,
+    pub first_byte_ns: u64,
+    pub fetched_ns: u64,
+    pub write_start_ns: u64,
+    pub written_ns: u64,
+    pub ok: bool,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Outcome {
     pub bytes_written: u64,
@@ -36,6 +50,8 @@ pub struct Outcome {
     pub failed: Vec<Range<u64>>,
     /// First few error messages, for the log and the response.
     pub errors: Vec<String>,
+    /// Every chunk's stage times, in completion order.
+    pub timings: Vec<ChunkTiming>,
 }
 
 impl Transfer {
@@ -79,19 +95,31 @@ pub async fn run_bounded<S: RangeSource + ?Sized, W: RemoteWriter + ?Sized>(
 ) -> Outcome {
     let chunk = t.chunk.min(pool.slot_size() as u64);
     let plan = chunks(t.range.clone(), chunk);
+    let start = Instant::now();
+    let ns = move |i: Instant| i.duration_since(start).as_nanos() as u64;
     let results = futures::stream::iter(plan)
         .map(|c| async move {
             let len = c.len as usize;
+            let mut tm = ChunkTiming { offset: c.offset, len: c.len, ..Default::default() };
+            let q = Instant::now();
             let mut slot = pool.acquire().await;
             let t0 = Instant::now();
+            m.h_slot_wait.observe(t0 - q);
+            tm.slot_ns = ns(t0);
             let fetched = src.get_into(&t.url, c.range(), &mut slot[..len]).await;
             let st = match fetched {
                 Ok(st) => st,
                 Err(e) => {
-                    return (c, e.requests as u64, Err(format!("fetch {:?}: {e}", c.range())));
+                    tm.requests = e.requests;
+                    return (c, tm, Err(format!("fetch {:?}: {e}", c.range())));
                 }
             };
-            m.fetch_ns.fetch_add(t0.elapsed().as_nanos() as u64, Relaxed);
+            let t_f = Instant::now();
+            tm.requests = st.requests;
+            tm.first_byte_ns = ns(t0 + st.first_byte);
+            tm.fetched_ns = ns(t_f);
+            m.h_fetch.observe(t_f - t0);
+            m.fetch_ns.fetch_add((t_f - t0).as_nanos() as u64, Relaxed);
             m.first_byte_ns.fetch_add(st.first_byte.as_nanos() as u64, Relaxed);
             m.bytes_fetched.fetch_add(st.bytes, Relaxed);
             let off = t.dest_offset + (c.offset - t.range.start);
@@ -101,17 +129,24 @@ pub async fn run_bounded<S: RangeSource + ?Sized, W: RemoteWriter + ?Sized>(
                 None => None,
             };
             let t1 = Instant::now();
+            m.h_write_wait.observe(t1 - t_f);
+            tm.write_start_ns = ns(t1);
             let wrote = writer.write(&slot[..len], &t.agent, t.dest.addr + off, t.dest.dev, notif).await;
-            m.write_ns.fetch_add(t1.elapsed().as_nanos() as u64, Relaxed);
-            (c, st.requests as u64, wrote.map_err(|e| format!("write {:?}: {e}", c.range())))
+            let t2 = Instant::now();
+            tm.written_ns = ns(t2);
+            m.h_write.observe(t2 - t1);
+            m.write_ns.fetch_add((t2 - t1).as_nanos() as u64, Relaxed);
+            tm.ok = wrote.is_ok();
+            (c, tm, wrote.map_err(|e| format!("write {:?}: {e}", c.range())))
         })
         .buffer_unordered(pool.slots())
         .collect::<Vec<_>>()
         .await;
 
     let mut out = Outcome::default();
-    for (c, reqs, r) in results {
-        out.s3_requests += reqs;
+    for (c, tm, r) in results {
+        out.s3_requests += tm.requests as u64;
+        out.timings.push(tm);
         match r {
             Ok(()) => {
                 out.bytes_written += c.len;

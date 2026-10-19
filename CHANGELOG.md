@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Instruments for the G0-close round:**
+  - per-chunk stage histograms on `/metrics`: slot wait, fetch, write wait and write, so pipeline throughput can be split by stage (#18);
+  - per-chunk timings in `pipeline::Outcome`;
+  - `adit-fetch-bench` reads many objects from a plan, rewrites the URL scheme for a TLS A/B, and logs every chunk;
+  - a CRT `GetObject` request type alongside `Default`;
+  - client knobs for the notification pump's back-off and NIXL's progress-thread delay (#17);
+  - a write-probe health gate (`hack/health.sh`) that `hack/g0c.sh` runs before the ladder and every 5 rungs.
+
+### Fixed
+
+- **NIXL registrations of 16 GiB or more failed on the proxy** (#19). The EFA installer runs with
+  `--skip-limit-conf`, which left `memlock` at the distro default of about 15 GiB.
+  `hack/install.sh` now installs an unlimited `memlock` limit for new sessions.
+
 - **Repository, laws and CI.** Apache 2.0 license, README, this changelog, `CLAUDE.md` holding
   the nine laws, and a single CI gate (`.github/workflows/gate.yml`) that runs the Rust tree
   (`cargo fmt`, `clippy`, `cargo test` against the NIXL stub API) and the Go tree (`go vet`,
