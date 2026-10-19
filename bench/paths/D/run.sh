@@ -51,7 +51,7 @@ P=D
 HERE=$(cd "$(dirname "$0")" && pwd)
 PHASE=${1-}
 case $PHASE in
-    plan|create|dra|redra|status|delete|watchdog|setup|mount|gdscheck|read|tune|umount) shift ;;
+    plan|sizing|create|dra|redra|status|delete|watchdog|setup|mount|gdscheck|read|tune|umount) shift ;;
     *) PHASE="read" ;;
 esac
 WORKLOAD=${1-}
@@ -102,6 +102,13 @@ size_plan() {
     WS_BYTES=$(jq -s 'map(.size)|add' "$MANIFEST")
     OBJECTS=$(jq -s length "$MANIFEST")
     local ws_gib=$(( (WS_BYTES * 11 / 10 + (1 << 30) - 1) >> 30 ))
+    # Size for the larger of the working set and the target throughput (law 3: path D at its best
+    # is sized to feed the client at its line rate, not to the 4.8 TiB minimum). PERSISTENT_2
+    # throughput is THROUGHPUT MB/s per TiB of storage, so the target sets a floor on capacity.
+    TARGET_GBPS=${TARGET_GBPS:-0}
+    local tput_gib=0
+    (( TARGET_GBPS > 0 )) && tput_gib=$(awk -v g="$TARGET_GBPS" -v t="$THROUGHPUT" 'BEGIN{printf "%d", (g*1000/8)/t*1024 + 0.999}')
+    (( tput_gib > ws_gib )) && ws_gib=$tput_gib
     local auto=$(( ((ws_gib + 2399) / 2400) * 2400 ))
     (( auto < 4800 )) && auto=4800
     FS_GIB=${FS_GIB:-$auto}
@@ -130,6 +137,20 @@ print_plan() {
 fs_state() { aws fsx describe-file-systems "${AWSF[@]}" --file-system-ids "$1" --query 'FileSystems[0].Lifecycle' 2>/dev/null; }
 
 op_plan() { size_plan; print_plan; }
+
+# The configuration-and-cost question itself: what PERSISTENT_2 FSx it takes to feed a client at a
+# given rate, and what that costs per hour and per TB delivered. No AWS calls.
+op_sizing() {
+    olog "PERSISTENT_2 sizing at ${THROUGHPUT} MB/s/TiB, \$${USD_GB_MONTH}/GB-month (Price List us-east-1, SSD)"
+    printf '%-12s %-12s %-12s %-14s %-16s\n' target_Gbps FS_GiB FS_TiB usd_per_hr usd_per_TB_read
+    for g in ${SIZING_GBPS:-37.5 100 200 400 800 1600 3200}; do
+        awk -v g="$g" -v t="$THROUGHPUT" -v p="$USD_GB_MONTH" 'BEGIN{
+            gib=(g*1000/8)/t*1024; gib=int((gib+2399)/2400)*2400; if (gib<4800) gib=4800;
+            hr=gib*p/730; tb_per_hr=g/8*3600/1000;   # TB moved per hour at the target rate
+            printf "%-12s %-12d %-12.1f %-14.2f %-16.3f\n", g, gib, gib/1024, hr, hr/tb_per_hr }'
+    done
+    olog "excludes: hydration from S3 (DRA lazy load), metadata import time, the client box; FSx bills while it exists, not while it reads"
+}
 
 op_create() {
     confirm
@@ -506,6 +527,7 @@ cl_umount() { sudo umount "$MNT" && log "unmounted $MNT"; }
 
 case $PHASE in
     plan)     operator_prologue; op_plan ;;
+    sizing)   operator_prologue; op_sizing ;;
     create)   operator_prologue; op_create ;;
     dra)      operator_prologue; op_dra ;;
     redra)    operator_prologue; op_redra ;;
