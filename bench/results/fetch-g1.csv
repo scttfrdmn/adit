@@ -1,0 +1,27 @@
+# #28 same-session fetch-only A/B, us-east-2c, 2026-10-19 ~06:20Z: adit-fetch-bench on c8gn.16xlarge (proxy-1, on-demand), 200 Gb/s NIC; s3://scttfrdmn-adit-bench-use2
+# columns transcribed from the bench stdout; s3_requests and failed were trimmed from the captured output (NOT captured)
+label,run,objects,chunk_bytes,slots,objects_inflight,meta_type,scheme,throughput_gbps,bytes,wall_s,gbps,s3_requests,cpu_s,avg_fetch_ms,failed,config,commit,notes
+T1-default-512,1,1,8388608,512,8,Default,https,200,68719476736,4.276,128.559,,76.82,249.7,,layout=T1;meta_type=default;slots=512;part_mib=8,3ff2f5e,s3_requests/failed not captured
+T1-default-512,2,1,8388608,512,8,Default,https,200,68719476736,4.201,130.869,,73.87,236.9,,layout=T1;meta_type=default;slots=512;part_mib=8,3ff2f5e,s3_requests/failed not captured
+T1-default-512,3,1,8388608,512,8,Default,https,200,68719476736,4.286,128.269,,75.28,239.7,,layout=T1;meta_type=default;slots=512;part_mib=8,3ff2f5e,s3_requests/failed not captured
+T2x64-default-512,1,64,8388608,512,64,Default,https,200,68719476736,3.660,150.197,,78.21,213.5,,layout=T2x64;meta_type=default;slots=512;part_mib=8,3ff2f5e,s3_requests/failed not captured
+T2x64-default-512,2,64,8388608,512,64,Default,https,200,68719476736,3.311,166.029,,75.28,193.6,,layout=T2x64;meta_type=default;slots=512;part_mib=8,3ff2f5e,s3_requests/failed not captured
+T2x64-default-512,3,64,8388608,512,64,Default,https,200,68719476736,3.264,168.421,,78.12,190.5,,layout=T2x64;meta_type=default;slots=512;part_mib=8,3ff2f5e,s3_requests/failed not captured
+T1-default-1024,1,1,8388608,1024,8,Default,https,200,68719476736,3.914,140.442,,73.61,435.2,,layout=T1;meta_type=default;slots=1024;part_mib=8,3ff2f5e,s3_requests/failed not captured
+T1-default-1024,2,1,8388608,1024,8,Default,https,200,68719476736,4.098,134.166,,73.58,431.9,,layout=T1;meta_type=default;slots=1024;part_mib=8,3ff2f5e,s3_requests/failed not captured
+T1-default-1024,3,1,8388608,1024,8,Default,https,200,68719476736,3.821,143.860,,73.66,423.9,,layout=T1;meta_type=default;slots=1024;part_mib=8,3ff2f5e,s3_requests/failed not captured
+T2x64-default-1024,1,64,8388608,1024,64,Default,https,200,68719476736,3.474,158.252,,80.93,406.7,,layout=T2x64;meta_type=default;slots=1024;part_mib=8,3ff2f5e,s3_requests/failed not captured
+T2x64-default-1024,2,64,8388608,1024,64,Default,https,200,68719476736,3.151,174.445,,78.58,368.3,,layout=T2x64;meta_type=default;slots=1024;part_mib=8,3ff2f5e,s3_requests/failed not captured
+T2x64-default-1024,3,64,8388608,1024,64,Default,https,200,68719476736,3.201,171.747,,78.39,364.1,,layout=T2x64;meta_type=default;slots=1024;part_mib=8,3ff2f5e,s3_requests/failed not captured
+T1-get-object-512,1,1,8388608,512,8,GetObject,https,200,68719476736,3.946,139.308,,65.25,222.4,,layout=T1;meta_type=get-object;slots=512;part_mib=8,3ff2f5e,s3_requests/failed not captured
+T1-get-object-512,2,1,8388608,512,8,GetObject,https,200,68719476736,4.239,129.688,,67.31,224.2,,layout=T1;meta_type=get-object;slots=512;part_mib=8,3ff2f5e,s3_requests/failed not captured
+T1-get-object-512,3,1,8388608,512,8,GetObject,https,200,68719476736,3.967,138.574,,68.06,220.8,,layout=T1;meta_type=get-object;slots=512;part_mib=8,3ff2f5e,s3_requests/failed not captured
+T2x64-get-object-512,1,64,8388608,512,64,GetObject,https,200,68719476736,3.489,157.571,,70.08,203.1,,layout=T2x64;meta_type=get-object;slots=512;part_mib=8,3ff2f5e,s3_requests/failed not captured
+T2x64-get-object-512,2,64,8388608,512,64,GetObject,https,200,68719476736,3.336,164.818,,69.24,189.9,,layout=T2x64;meta_type=get-object;slots=512;part_mib=8,3ff2f5e,s3_requests/failed not captured
+T2x64-get-object-512,3,64,8388608,512,64,GetObject,https,200,68719476736,3.208,171.392,,68.80,189.9,,layout=T2x64;meta_type=get-object;slots=512;part_mib=8,3ff2f5e,s3_requests/failed not captured
+T1-get-object-1024,1,1,8388608,1024,8,GetObject,https,200,68719476736,4.431,124.062,,64.89,466.3,,layout=T1;meta_type=get-object;slots=1024;part_mib=8,3ff2f5e,s3_requests/failed not captured
+T1-get-object-1024,2,1,8388608,1024,8,GetObject,https,200,68719476736,4.030,136.405,,63.46,447.7,,layout=T1;meta_type=get-object;slots=1024;part_mib=8,3ff2f5e,s3_requests/failed not captured
+T1-get-object-1024,3,1,8388608,1024,8,GetObject,https,200,68719476736,4.296,127.964,,67.89,468.6,,layout=T1;meta_type=get-object;slots=1024;part_mib=8,3ff2f5e,s3_requests/failed not captured
+T2x64-get-object-1024,1,64,8388608,1024,64,GetObject,https,200,68719476736,3.344,164.388,,71.64,377.6,,layout=T2x64;meta_type=get-object;slots=1024;part_mib=8,3ff2f5e,s3_requests/failed not captured
+T2x64-get-object-1024,2,64,8388608,1024,64,GetObject,https,200,68719476736,3.120,176.210,,69.20,352.8,,layout=T2x64;meta_type=get-object;slots=1024;part_mib=8,3ff2f5e,s3_requests/failed not captured
+T2x64-get-object-1024,3,64,8388608,1024,64,GetObject,https,200,68719476736,3.031,181.407,,69.26,345.0,,layout=T2x64;meta_type=get-object;slots=1024;part_mib=8,3ff2f5e,s3_requests/failed not captured
