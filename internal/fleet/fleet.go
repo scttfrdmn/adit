@@ -76,6 +76,9 @@ type Role struct {
 	Command      string // spawn --command, optional
 	CostLimit    float64
 	VolumeGiB    int32
+	// EFAInterfaces is spawn's --efa-interfaces (0 = every EFA the type supports). 1 needs no
+	// Elastic IP: a region's Elastic IP limit caps how many multi-card boxes a fleet can hold.
+	EFAInterfaces int
 }
 
 // Spec is a whole fleet.
@@ -257,6 +260,9 @@ func (s *Spec) launchArgs(r Role, i int, c Candidate, subnet, sg, ami, idFile, p
 	}
 	if pg != "" {
 		a = append(a, "--placement-group", pg)
+	}
+	if r.EFAInterfaces > 0 {
+		a = append(a, "--efa-interfaces", fmt.Sprint(r.EFAInterfaces))
 	}
 	return a
 }
@@ -579,7 +585,7 @@ func WaitGone(ctx context.Context, spawn, profile, fleet string, every time.Dura
 // `efa-only`) as its instance type supports. A launch flag is not evidence:
 // spawn once accepted --efa and attached a plain ENA (spawn#1112), and attached
 // one EFA to multi-card types that have several (spawn#661).
-func VerifyEFA(ctx context.Context, ec2For EC2For, boxes []Box) error {
+func VerifyEFA(ctx context.Context, ec2For EC2For, boxes []Box, expectEFA map[string]int) error {
 	var bad []string
 	maxFor := map[string]int{}
 	for _, b := range boxes {
@@ -598,7 +604,11 @@ func VerifyEFA(ctx context.Context, ec2For EC2For, boxes []Box) error {
 					}
 					maxFor[t] = maxEFA(it.InstanceTypes[0])
 				}
-				if msg := efaShortfall(efaCount(in.NetworkInterfaces), maxFor[t]); msg != "" {
+				want := maxFor[t]
+				if b.Role == "proxy" && expectEFA != nil && expectEFA[b.Role] > 0 {
+					want = expectEFA[b.Role]
+				}
+				if msg := efaShortfall(efaCount(in.NetworkInterfaces), want); msg != "" {
 					bad = append(bad, b.Name+" ("+t+": "+msg+")")
 				}
 			}

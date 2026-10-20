@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`aditctl fleet up --proxy-efa-interfaces N`** (spawn's `--efa-interfaces`). `hack/g2-place.sh` gives every proxy both rails only when the region's Elastic IPs hold the whole fleet, otherwise one rail each, and launches proxies on-demand.
 - **Per-arm snapshots in `bench/paths/interleave.sh`.** Every proxy's `/metrics` and the client's per-device EFA counters are saved before and after each E arm, for per-lever attribution and stall forensics (#51).
 - **EFA counters in proxy `/metrics`.** `adit-proxy` exposes its own EFA hw_counters per device (`adit_proxy_efa{dev,counter}`).
 - **`hack/g2.sh` `bsweep`** tunes path B (threads × task size × objects in flight) on the client before H-ceiling (law 3).
