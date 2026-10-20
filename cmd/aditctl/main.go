@@ -432,7 +432,7 @@ func envOr(k, def string) string {
 func cmdTeardown(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("teardown", flag.ExitOnError)
 	profile := fs.String("profile", os.Getenv("AWS_PROFILE"), "AWS profile")
-	regions := fs.String("regions", "us-east-1,us-east-2,us-west-2", "regions to check on EC2 directly")
+	regions := fs.String("regions", "us-east-1,us-east-2,us-west-2,us-west-1,eu-north-1,ap-south-1,ap-northeast-1,ap-northeast-2", "regions to check on EC2 directly")
 	_ = fs.Parse(args)
 	ls, err := fleet.List(ctx, envOr("ADIT_SPAWN", "spawn"), *profile, "")
 	if err != nil {
