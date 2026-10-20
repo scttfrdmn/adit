@@ -59,9 +59,14 @@ for tr in "${TRIES[@]}"; do
     echo "$out" >>"$LOG"
     grep -E '^adit-g2-' <<<"$out" | tee -a "$LOG"
     if grep -q '^adit-g2-client-0' <<<"$out"; then
-        [[ $rc -ne 0 ]] && echo "fleet up exit $rc after the client landed: check proxy-0 ($LOG)"
-        echo "PLACED $r $t bucket=$bkt"
-        exit 0
+        if grep -q '^adit-g2-proxy-0' <<<"$out"; then
+            echo "PLACED $r $t bucket=$bkt"
+            exit 0
+        fi
+        # A client with no proxy beside it bills $40-90/hr for nothing (ap-northeast-1a,
+        # 2026-10-20): retire it at once and keep looking.
+        echo "[$(date -u +%TZ)] $t landed in $r but proxy-0 did not (fleet up exit $rc): retiring" | tee -a "$LOG"
+        timeout 1500 go run ./cmd/aditctl fleet down --name g2 --candidates "${azs%% *}" --profile "${AWS_PROFILE:-aws}" 2>&1 | tail -1 | tee -a "$LOG"
     fi
 done
 echo "NONE (log $LOG)"
