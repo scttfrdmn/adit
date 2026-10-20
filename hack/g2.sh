@@ -33,7 +33,7 @@ ARMS=${ARMS:-E8 E4 E2 E1}
 SWEEP_SLOTS=${SWEEP_SLOTS:-1024 4096}
 BUF_GIB=${BUF_GIB:-64}
 E_CONCURRENCY=${E_CONCURRENCY:-128}
-E_ARGS=${E_ARGS:---nixl-progress-delay-us 100}
+E_ARGS=${E_ARGS:---nixl-progress-delay-us 100 --agent-per-gpu}
 CLIENT=adit-$FLEET-client-0
 OUT=${OUT:-bench/runs/g2-$(date -u +%Y%m%dT%H%M%SZ)}
 mkdir -p "$OUT"
@@ -62,9 +62,11 @@ log "client GPUs: $DEVS"
 REPO=/opt/adit-src/adit
 
 start_proxies() {
+    # The proxy's S3 client opens a connection per in-flight request: at 2,048 slots and a 600 Gb/s
+    # CRT target that exceeds the default 1,024 open files (AWS_ERROR_MAX_FDS_EXCEEDED -> 502, #48).
     local args=$1 tag=$2
     for k in "${!PROXIES[@]}"; do
-        on "${PROXIES[$k]}" "pkill -x adit-proxy; sleep 1; bgrun -o /tmp/proxy-$tag.out env RUST_LOG=warn adit-proxy --listen 0.0.0.0:8480 --agent-name ${PROXIES[$k]} $args; sleep 3" >>"$OUT/run.log" &
+        on "${PROXIES[$k]}" "pkill -x adit-proxy; sleep 1; ulimit -n \$(ulimit -Hn); ulimit -n; bgrun -o /tmp/proxy-$tag.out env RUST_LOG=warn adit-proxy --listen 0.0.0.0:8480 --agent-name ${PROXIES[$k]} $args; sleep 3" >>"$OUT/run.log" &
     done
     wait
     # Read the configuration back from every running proxy, not the flag.
@@ -76,7 +78,7 @@ start_proxies() {
 client_run() {
     # Long work runs under bgrun on the client (spawn connect block-buffers); poll its output.
     local name=$1 cmd=$2
-    on "$CLIENT" "cd $REPO && bgrun -o /tmp/g2-$name.out bash -c '$cmd; echo EXIT=\$?'" >/dev/null
+    on "$CLIENT" "cd $REPO && ulimit -n \$(ulimit -Hn) && bgrun -o /tmp/g2-$name.out bash -c '$cmd; echo EXIT=\$?'" >/dev/null
     local t0=$SECONDS
     while :; do
         sleep 30
