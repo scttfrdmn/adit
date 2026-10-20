@@ -51,6 +51,10 @@ struct Args {
     /// instead of one agent holding every buffer (#48: that lost notifications under concurrency).
     #[arg(long)]
     agent_per_gpu: bool,
+    /// With --agent-per-gpu: GPU g is served only by proxy g mod N and requests are not striped
+    /// across proxies, so each agent hears from one initiator (#50/#51).
+    #[arg(long)]
+    pin_gpu_proxy: bool,
     /// GPU destination buffer per GPU, GiB.
     #[arg(long, default_value_t = 16)]
     buffer_gib: u64,
@@ -205,12 +209,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         timeout: Duration::from_secs(3600),
         pump_idle: Duration::from_micros(a.pump_idle_us),
     };
+    if a.pin_gpu_proxy && !a.agent_per_gpu {
+        return Err("--pin-gpu-proxy needs --agent-per-gpu".into());
+    }
     let client = if a.agent_per_gpu {
         let srcs = agents
             .iter()
             .map(|g| (g.name().to_string(), g.clone() as std::sync::Arc<dyn adit_client::completion::NotifSource>))
             .collect();
-        let c = Client::with_agents(cfg, dests.clone(), srcs)?;
+        let mut c = Client::with_agents(cfg, dests.clone(), srcs)?;
+        if a.pin_gpu_proxy {
+            c = c.pin_dest_proxy();
+        }
         c.register_each(&mds).await?;
         c
     } else {
@@ -396,9 +406,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         row.set(
             "config",
             format!(
-                "backend={};agent_per_gpu={};chunk={chunk};stripe={};concurrency={};buffer_gib={};waves={};gpu={};devices={};spread={};pump_idle_us={};nixl_progress_delay_us={}",
+                "backend={};agent_per_gpu={};pin_gpu_proxy={};chunk={chunk};stripe={};concurrency={};buffer_gib={};waves={};gpu={};devices={};spread={};pump_idle_us={};nixl_progress_delay_us={}",
                 a.backend,
                 a.agent_per_gpu,
+                a.pin_gpu_proxy,
                 a.stripe,
                 a.concurrency,
                 a.buffer_gib,

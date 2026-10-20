@@ -64,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Lost notifications and stalled writes with many proxies (#50, #51).** `adit-get --pin-gpu-proxy` (with `--agent-per-gpu`) serves each destination GPU from exactly one proxy and does not stripe a request across proxies. NIXL 1.2.0's LIBFABRIC target matches notifications to writes by a 16-bit transfer id only, and every initiator numbers its transfers from 1. Two proxies writing into one agent collide: the second notification is dropped as a "duplicate", and the leaked placeholder entries grow the map the target scans on every completion. `hack/g2.sh` uses it by default; its `confirm50` step checks the mechanism.
 - **Host CPU counts bursty work.** `host_cpu_s` is now online CPUs × wall − (idle + iowait), with idle accounted precisely under NOHZ. The tick-sampled sum missed most of a process that wakes every ~100 µs: G2 on p5en read host 1.49 s against 3.60 s for the process alone. It also counted `guest` twice and included `steal`. The old figure is kept as `host_cpu_ticks_s` (#27).
 - **GPU verification left the GPU mostly idle.** `adit-get` hashed each object with its own
   kernel launch: 128 threads for a 1 GiB object, synchronized one at a time. On T2 (1,000 × 1 GiB)

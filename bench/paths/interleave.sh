@@ -66,11 +66,13 @@ arm() {
             px=$(IFS=,; echo "${PX[*]:0:k}")
             [[ $STRIPE == 1 && $k -gt 1 ]] && st=(--stripe)
             snap "c$c-$a-pre" "${PX[@]:0:k}"
+            # NIXL warnings (e.g. "Duplicate fragment received": #50) land in the arm's stderr file.
+            export NIXL_LOG_LEVEL=${NIXL_LOG_LEVEL:-WARN}
             # shellcheck disable=SC2086  # E_ARGS is a flag list
             adit-get --proxies "$px" "${st[@]}" --plan "$PLAN" --agent-name "il-$a-$c-$$" --devices "$DEVICES" \
                 --buffer-gib "$BUF_GIB" --chunk-mib "$CHUNK_MIB" --concurrency "$E_CONCURRENCY" --runs 1 $E_ARGS \
                 --meta path=E --meta "workload=$WORKLOAD" --meta "cold=$COLD" \
-                --meta "client_instance=$CLIENT_INSTANCE" --meta "commit=$COMMIT" --out "$OUT" 2>&1 | grep -E '^E,' | tail -1
+                --meta "client_instance=$CLIENT_INSTANCE" --meta "commit=$COMMIT" --out "$OUT" 2>"$SNAP/c$c-$a.stderr" | grep -E '^E,' | tail -1
             snap "c$c-$a-post" "${PX[@]:0:k}" ;;
         *) log "unknown arm $a"; return 1 ;;
     esac

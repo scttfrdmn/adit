@@ -8,6 +8,7 @@
 #   health    hack/health.sh per proxy against the client, ALL_RAILS=1 (both proxy EFA devices)
 #   start     start adit-proxy on every proxy (PROXY_ARGS) and read its configuration back
 #   plans     presign T2, T2-64 (its first 64 objects) and T1 on the client
+#   confirm50 E<N> on T2-64 unpinned vs pinned, counting NIXL duplicate-fragment warnings (#50)
 #   ladder    proxy ladder: ARMS (E8 E4 E2 E1) interleaved over CYCLES on T2, all GPUs
 #   sweep     at E<N>: chunk 4/16 MiB and slots SWEEP_SLOTS, one T2 read each (restarts the proxies)
 #   t1        T1 at E<N>, striped and spread over all GPUs, 3 runs
@@ -34,7 +35,7 @@ ARMS=${ARMS:-E8 E4 E2 E1}
 SWEEP_SLOTS=${SWEEP_SLOTS:-1024 4096}
 BUF_GIB=${BUF_GIB:-64}
 E_CONCURRENCY=${E_CONCURRENCY:-128}
-E_ARGS=${E_ARGS:---nixl-progress-delay-us 100 --agent-per-gpu}
+E_ARGS=${E_ARGS:---nixl-progress-delay-us 100 --agent-per-gpu --pin-gpu-proxy}
 CLIENT=adit-$FLEET-client-0
 OUT=${OUT:-bench/runs/g2-$(date -u +%Y%m%dT%H%M%SZ)}
 mkdir -p "$OUT"
@@ -135,6 +136,14 @@ fi
 
 common="CYCLES=$CYCLES DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY"
 
+if want confirm50; then
+    # #50 mechanism check: the same E8 read of T2-64 unpinned (8 proxies may write into one agent)
+    # and pinned (one proxy per agent). The NIXL collision theory predicts "Duplicate fragment
+    # received" warnings and partial objects only in the unpinned arm.
+    log "confirm50: E$N on T2-64, unpinned vs pinned"
+    client_run confirm50 "export NIXL_LOG_LEVEL=WARN; for m in unpinned pinned; do f=''; [ \$m = pinned ] && f=--pin-gpu-proxy; sudo bash hack/drop-caches.sh >/dev/null; adit-get --proxies $URLS --plan /tmp/t2-64-plan.jsonl --agent-name c50\$m --agent-per-gpu \$f --devices $DEVS --buffer-gib $BUF_GIB --concurrency $E_CONCURRENCY --runs 1 --nixl-progress-delay-us 100 --meta path=E --meta workload=T2-64 --meta cold=1 --out /tmp/g2-confirm50.csv 2>/tmp/c50-\$m.err | grep -E '^E,' | cut -d, -f11-15,23; echo \$m duplicate_fragment_warnings=\$(grep -c 'Duplicate fragment' /tmp/c50-\$m.err); done"
+fi
+
 if want ladder; then
     log "ladder: $ARMS x $CYCLES cycles on T2"
     client_run ladder "PLAN=/tmp/t2-plan.jsonl PROXIES=$URLS ARMS=\"$ARMS\" STRIPE=0 E_ARGS=\"$E_ARGS\" $common OUT=/tmp/g2-ladder.csv bash bench/paths/interleave.sh T2"
@@ -156,7 +165,7 @@ if want sweep; then
 fi
 
 if want t1; then
-    log "t1: E$N, striped and spread over all GPUs"
+    log "t1: E$N, spread over all GPUs, each GPU's segment from its pinned proxy"
     client_run t1 "PLAN=/tmp/t1-plan.jsonl PROXIES=$URLS ARMS=E$N CYCLES=3 STRIPE=1 E_ARGS=\"$E_ARGS --spread\" DEVICES=$DEVS BUF_GIB=16 E_CONCURRENCY=$(( $(tr -cd , <<<"$DEVS" | wc -c) + 1 )) OUT=/tmp/g2-t1.csv bash bench/paths/interleave.sh T1"
 fi
 
@@ -173,7 +182,7 @@ if want ceiling; then
 fi
 
 if want collect; then
-    for f in ladder sweep t1 ceiling bsweep; do
+    for f in confirm50 ladder sweep t1 ceiling bsweep; do
         on "$CLIENT" "test -f /tmp/g2-$f.csv && cat /tmp/g2-$f.csv" >"$OUT/g2-$f.csv"
         on "$CLIENT" "test -f /tmp/g2-$f.order && cat /tmp/g2-$f.order" >"$OUT/g2-$f.order"
     done
