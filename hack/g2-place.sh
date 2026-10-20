@@ -51,6 +51,37 @@ for tr in "${TRIES[@]}"; do
     ccap=$(awk -v p="$cprice" 'BEGIN{printf "%d", p*2+5}')
     pcap=$(awk -v p="$pprice" 'BEGIN{printf "%d", p*2+3}')
     echo "[$(date -u +%TZ)] try $t in $r (caps client \$$ccap proxy \$$pcap)" | tee -a "$LOG"
+    # Proxy first in AZs where the client lands but proxies have not (PROXY_FIRST_AZS): a proxy
+    # without capacity fails for free, a client without a proxy bills ~$40/hr until retired.
+    pf=""
+    for z in $azs; do [[ " ${PROXY_FIRST_AZS-ap-northeast-1a} " == *" $z "* ]] && pf="$pf $z"; done
+    if [[ -n $pf ]]; then
+        for z in $pf; do
+            pout=$(timeout 1500 go run ./cmd/aditctl fleet up --name g2 --clients 0 --proxies 1 --candidates "$z:spot,$z" \
+                --proxy-type c8gn.48xlarge --proxy-spot --ttl 2h --client-cost-limit 1 --proxy-cost-limit "$pcap" \
+                --proxy-ami "$pami" --bucket "$bkt" --profile "${AWS_PROFILE:-aws}" 2>&1)
+            echo "$pout" >>"$LOG"
+            if grep -q '^adit-g2-proxy-0' <<<"$pout"; then
+                echo "[$(date -u +%TZ)] proxy-0 landed in $z first; trying the client" | tee -a "$LOG"
+                cout=$(timeout 2400 go run ./cmd/aditctl fleet up --name g2 --clients 1 --proxies 0 --candidates "$z:spot,$z" \
+                    --client-type "$t" --client-cost-limit "$ccap" --proxy-cost-limit 1 --ttl 2h --client-ami "$cami" \
+                    --bucket "$bkt" --profile "${AWS_PROFILE:-aws}" 2>&1)
+                echo "$cout" >>"$LOG"
+                if grep -q '^adit-g2-client-0' <<<"$cout"; then
+                    echo "PLACED $r $t bucket=$bkt (proxy first)"
+                    exit 0
+                fi
+                echo "[$(date -u +%TZ)] no $t in $z: retiring proxy-0" | tee -a "$LOG"
+                timeout 1500 go run ./cmd/aditctl fleet down --name g2 --candidates "$z" --profile "${AWS_PROFILE:-aws}" 2>&1 | tail -1 | tee -a "$LOG"
+            else
+                echo "[$(date -u +%TZ)] no proxy capacity in $z; skipping its client" | tee -a "$LOG"
+            fi
+        done
+        azs=$(for z in $azs; do [[ " $pf " == *" $z "* ]] || printf '%s ' "$z"; done)
+        [[ -z ${azs// } ]] && continue
+        c=$(for z in $azs; do printf '%s:spot,' "$z"; done; for z in $azs; do printf '%s,' "$z"; done)
+        c=${c%,}
+    fi
     out=$(timeout 2400 go run ./cmd/aditctl fleet up --name g2 --candidates "$c" --client-type "$t" \
         --proxy-type c8gn.48xlarge --proxies 1 --proxy-spot --ttl 2h --client-cost-limit "$ccap" \
         --proxy-cost-limit "$pcap" --client-ami "$cami" --proxy-ami "$pami" --bucket "$bkt" \
