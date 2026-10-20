@@ -40,7 +40,7 @@ impl NixlDescriptor for Region {
 pub struct ClientAgent {
     agent: Agent,
     _backend: Backend,
-    _registration: RegistrationHandle,
+    _registrations: Vec<RegistrationHandle>,
     name: String,
 }
 
@@ -76,8 +76,23 @@ impl ClientAgent {
         vram: bool,
         progress_delay_us: u64,
     ) -> Result<Arc<Self>, NixlFailure> {
+        Self::with_regions(name, backend, &[(addr, len, dev)], vram, progress_delay_us)
+    }
+
+    /// One agent registering several regions `(addr, len, dev)`, e.g. one buffer per GPU of a
+    /// multi-GPU client (G2). Proxies see them all in one metadata blob.
+    pub fn with_regions(
+        name: &str,
+        backend: &str,
+        regions: &[(u64, usize, u64)],
+        vram: bool,
+        progress_delay_us: u64,
+    ) -> Result<Arc<Self>, NixlFailure> {
         if nixl_sys::is_stub() {
             return Err(NixlFailure("built against the NIXL stub API".into()));
+        }
+        if regions.is_empty() {
+            return Err(NixlFailure("no regions to register".into()));
         }
         let cfg =
             AgentConfig { thread_sync: ThreadSync::Rw, pthr_delay_us: progress_delay_us, ..AgentConfig::default() };
@@ -87,8 +102,11 @@ impl ClientAgent {
         let mut opt = OptArgs::new().map_err(nixl)?;
         opt.add_backend(&b).map_err(nixl)?;
         let mem = if vram { MemType::Vram } else { MemType::Dram };
-        let registration = agent.register_memory(&Region { addr, len, dev, mem }, Some(&opt)).map_err(nixl)?;
-        Ok(Arc::new(Self { agent, _backend: b, _registration: registration, name: name.into() }))
+        let registrations = regions
+            .iter()
+            .map(|&(addr, len, dev)| agent.register_memory(&Region { addr, len, dev, mem }, Some(&opt)).map_err(nixl))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Arc::new(Self { agent, _backend: b, _registrations: registrations, name: name.into() }))
     }
 
     pub fn name(&self) -> &str {

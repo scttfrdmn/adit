@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`adit-get --agent-per-gpu`** gives each destination GPU its own NIXL agent. One agent holding 8 VRAM regions lost notifications for every region but the first under concurrent writes on p5en (#50).
+- **`hack/g2-place.sh`** retries placement across every approved p5en region: proxy first where clients land without proxies, and a client that lands without a proxy is retired. **`hack/bench-bucket.sh`** creates regional bench buckets configured like the us-east-2 one.
+- **G2 results** in `bench/results/paths-g2.csv` (#48): p5en client, 8 × c8gn.48xlarge proxies, T2 stripe ladder, path B on 8 GPUs, T1 spread. Partial rows are defects (#51), not results.
+
+- **Multi-GPU destinations (G2, #48).**
+  - `adit-get --devices 0,…,7` registers one buffer per GPU with one NIXL agent (`ClientAgent::with_regions`) and sends whole objects to the least-filled GPU. `--spread` instead splits each object into part-aligned segments, one per GPU.
+  - Each GPU hashes its own segments. The object's part digests are their concatenation, checked against the manifest as before.
+  - `Client::with_dests` / `get_into` address a request to one of several registered destinations, and notification offsets stay destination-relative.
+  - Path B's loader (`gpuload.py --devices`) spreads objects round-robin over the same GPUs.
+- **Per-EFA-device counters.** The counter window keeps deltas per device (`Measured::efa_by_dev`), and `adit-get` notes `rails=active/total` per run.
+  - `hack/wseries.sh` sums counters over every EFA device; it previously broke on multi-card boxes. It also reports `rails`.
+  - `hack/health.sh` with `ALL_RAILS=1` fails a proxy whose EFA devices did not all carry writes.
+- **`aditctl fleet`:**
+  - `--proxy-spot` (spot first, on-demand on capacity or quota errors);
+  - proxies launch in parallel once the first is up;
+  - `VerifyEFA` requires as many EFA interfaces as the instance type supports, not just one (spawn#661).
+- **`hack/g2.sh`** raises each proxy's open-file limit to the hard limit. At 2,048 slots the default 1,024 turned fetches into `AWS_ERROR_MAX_FDS_EXCEEDED` 502s.
+- **`hack/g2.sh`** drives the G2 session: refresh, per-proxy health, proxy start with configuration read back, presign, the stripe ladder, chunk and slot sweeps, T1 spread, H-ceiling and collect. **`hack/gen-box.sh`** is the generator role. `bench/paths/interleave.sh` takes `E<n>` arms over `PROXIES`, `B<threads>` arms, and `DEVICES`, `CHUNK_MIB` and `E_ARGS`.
+
 - **`bench/paths/interleave.sh`** runs path arms in a rotated order every cycle, so time-of-session effects (S3 warm-up on a repeatedly read key) spread across arms instead of confounding them (#45).
 - **`bench/paths/A/stages.sh`** splits path A into the s5cmd download (its own wall and rusage) and the local load, for per-stage attribution.
 

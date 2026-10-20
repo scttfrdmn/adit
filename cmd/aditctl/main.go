@@ -320,6 +320,8 @@ func cmdFleet(ctx context.Context, args []string) error {
 	dry := fs.Bool("dry-run", false, "print spawn commands only")
 	spawnBin := fs.String("spawn", envOr("ADIT_SPAWN", "spawn"), "spawn binary (env ADIT_SPAWN)")
 	clusterPG := fs.Bool("cluster-pg", false, "place every box in one cluster placement group per AZ")
+	proxyStart := fs.Int("proxy-start", 0, "first proxy index (add proxies to a placed fleet with --clients 0 and --candidates its AZ)")
+	proxySpot := fs.Bool("proxy-spot", false, "launch proxies on spot first, on-demand when spot has no capacity or quota (size --proxy-cost-limit for on-demand)")
 	_ = fs.Parse(args[1:])
 	if *name == "" {
 		return errors.New("--name is required")
@@ -347,7 +349,7 @@ func cmdFleet(ctx context.Context, args []string) error {
 			Name: *name, Candidates: cs, ClusterPG: *clusterPG, TTL: *ttl, Bucket: *bucket, Profile: *profile,
 			Client: fleet.Role{Name: "client", InstanceType: *clientType, Count: *clients, AMI: *clientAMI, Command: *clientCmd, CostLimit: *clientCap, VolumeGiB: 200},
 			Proxy:  fleet.Role{Name: "proxy", InstanceType: *proxyType, Count: *proxies, AMI: *proxyAMI, Command: *proxyCmd, CostLimit: *proxyCap, VolumeGiB: 100},
-			AMIFor: amiFor, Spawn: *spawnBin, Log: os.Stderr, DryRun: *dry,
+			AMIFor: amiFor, Spawn: *spawnBin, Log: os.Stderr, DryRun: *dry, ProxySpot: *proxySpot, ProxyStart: *proxyStart,
 		}
 		ec2For := func(region string) *ec2.Client {
 			cfg, _ := awsConfig(ctx, region)
@@ -430,7 +432,7 @@ func envOr(k, def string) string {
 func cmdTeardown(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("teardown", flag.ExitOnError)
 	profile := fs.String("profile", os.Getenv("AWS_PROFILE"), "AWS profile")
-	regions := fs.String("regions", "us-east-1,us-east-2,us-west-2", "regions to check on EC2 directly")
+	regions := fs.String("regions", "us-east-1,us-east-2,us-west-2,us-west-1,eu-north-1,ap-south-1,ap-northeast-1,ap-northeast-2", "regions to check on EC2 directly")
 	_ = fs.Parse(args)
 	ls, err := fleet.List(ctx, envOr("ADIT_SPAWN", "spawn"), *profile, "")
 	if err != nil {

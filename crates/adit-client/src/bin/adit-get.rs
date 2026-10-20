@@ -5,8 +5,15 @@
 //! The timed window covers the transfers only; GPU verification runs after the window closes and
 //! is reported in the `oracle` column. Objects are packed into the GPU buffer in waves when the
 //! plan exceeds it; each wave is verified before the buffer is zeroed for the next.
+//!
+//! With `--devices`, every listed GPU gets its own buffer, all registered with one agent. Objects
+//! go whole to the least-filled GPU, or, with `--spread`, each object is split into part-aligned
+//! segments, one per GPU. Each GPU hashes its own segments; an object's part digests are the
+//! concatenation of its segments' in order.
 
+use std::collections::BTreeMap;
 use std::io::Write;
+use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use adit_client::counters::Window;
@@ -34,7 +41,17 @@ struct Args {
     backend: String,
     #[arg(long, default_value_t = 0)]
     device: usize,
-    /// GPU destination buffer, GiB.
+    /// Destination GPUs, comma-separated (overrides `--device`); one buffer of `--buffer-gib` each.
+    #[arg(long, value_delimiter = ',')]
+    devices: Vec<usize>,
+    /// Split every object across all destination GPUs in part-aligned segments.
+    #[arg(long)]
+    spread: bool,
+    /// One NIXL agent per GPU (`<agent-name>-g<dev>`), each registering only its GPU's buffer,
+    /// instead of one agent holding every buffer (#48: that lost notifications under concurrency).
+    #[arg(long)]
+    agent_per_gpu: bool,
+    /// GPU destination buffer per GPU, GiB.
     #[arg(long, default_value_t = 16)]
     buffer_gib: u64,
     #[arg(long, default_value_t = 8)]
@@ -78,25 +95,64 @@ struct PlanEntry {
     url: String,
 }
 
-fn waves(plan: &[PlanEntry], cap: u64) -> Result<Vec<Vec<(usize, u64)>>, String> {
+/// One piece of an object: object bytes `range` into GPU `gpu`'s buffer at `off`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Seg {
+    gpu: usize,
+    range: Range<u64>,
+    off: u64,
+}
+
+/// Split `size` bytes into at most `n` contiguous pieces, each a whole number of `part`s (the
+/// last may be short), so each piece's part digests are a run of the object's.
+fn split(size: u64, part: u64, n: usize) -> Vec<Range<u64>> {
+    let per = size.div_ceil(part).div_ceil(n as u64).max(1) * part;
+    (0..n as u64).map(|k| k * per..((k + 1) * per).min(size)).filter(|r| r.start < r.end).collect()
+}
+
+/// Pack the plan into waves over `ngpu` buffers of `cap` bytes each: per object, its segments
+/// (one whole piece on the least-filled GPU, or with `spread` one piece per GPU), each placed
+/// page-aligned. A wave closes when an object no longer fits.
+/// A wave: plan index and its segments, per object.
+type Wave = Vec<(usize, Vec<Seg>)>;
+
+fn waves(plan: &[PlanEntry], cap: u64, ngpu: usize, spread: bool) -> Result<Vec<Wave>, String> {
     let mut out = vec![];
-    let mut cur = vec![];
-    let mut off = 0u64;
+    let mut cur: Wave = vec![];
+    let mut used = vec![0u64; ngpu];
     for (i, p) in plan.iter().enumerate() {
-        if p.m.size > cap {
-            return Err(format!("{} ({} bytes) exceeds the {cap}-byte buffer", p.m.key, p.m.size));
+        let pieces =
+            if spread { split(p.m.size, p.m.part_size.max(1), ngpu) } else { split(p.m.size, p.m.size.max(1), 1) };
+        if let Some(r) = pieces.iter().find(|r| r.end - r.start > cap) {
+            return Err(format!("{} ({} bytes in a piece) exceeds the {cap}-byte buffer", p.m.key, r.end - r.start));
         }
-        // Keep each object page-aligned in the buffer.
-        let aligned = off.div_ceil(4096) * 4096;
-        if aligned + p.m.size > cap {
-            out.push(std::mem::take(&mut cur));
-            off = 0;
-            cur.push((i, 0));
-            off += p.m.size;
-        } else {
-            cur.push((i, aligned));
-            off = aligned + p.m.size;
+        let place = |used: &[u64]| -> Option<Vec<Seg>> {
+            let mut u = used.to_vec();
+            let mut segs = vec![];
+            for (k, r) in pieces.iter().enumerate() {
+                let g = if spread { k } else { (0..ngpu).min_by_key(|&g| u[g]).unwrap_or(0) };
+                // Keep each piece page-aligned in the buffer.
+                let off = u[g].div_ceil(4096) * 4096;
+                if off + (r.end - r.start) > cap {
+                    return None;
+                }
+                u[g] = off + (r.end - r.start);
+                segs.push(Seg { gpu: g, range: r.clone(), off });
+            }
+            Some(segs)
+        };
+        let segs = match place(&used) {
+            Some(s) => s,
+            None => {
+                out.push(std::mem::take(&mut cur));
+                used.iter_mut().for_each(|u| *u = 0);
+                place(&used).ok_or_else(|| format!("{} does not fit an empty buffer", p.m.key))?
+            }
+        };
+        for sg in &segs {
+            used[sg.gpu] = sg.off + (sg.range.end - sg.range.start);
         }
+        cur.push((i, segs));
     }
     if !cur.is_empty() {
         out.push(cur);
@@ -117,39 +173,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(serde_json::from_str)
         .collect::<Result<_, _>>()?;
     let cap = a.buffer_gib << 30;
-    let waves = waves(&plan, cap)?;
+    let devices = if a.devices.is_empty() { vec![a.device] } else { a.devices.clone() };
+    let waves = waves(&plan, cap, devices.len(), a.spread)?;
 
-    let gpu = Gpu::new(a.device)?;
-    let mut buf = gpu.alloc(cap as usize)?;
-    let dest = Dest { addr: buf.addr(), len: cap, dev: a.device as u64 };
-    let agent = ClientAgent::with_progress_delay(
-        &a.agent_name,
-        &a.backend,
-        dest.addr,
-        cap as usize,
-        dest.dev,
-        true,
-        a.nixl_progress_delay_us,
-    )?;
-    let md = agent.metadata()?;
+    let gpus: Vec<Gpu> = devices.iter().map(|&d| Gpu::new(d)).collect::<Result<_, _>>()?;
+    let mut bufs = gpus.iter().map(|g| g.alloc(cap as usize)).collect::<Result<Vec<_>, _>>()?;
+    let dests: Vec<Dest> =
+        bufs.iter().zip(&devices).map(|(b, &d)| Dest { addr: b.addr(), len: cap, dev: d as u64 }).collect();
+    let regions: Vec<(u64, usize, u64)> = dests.iter().map(|d| (d.addr, cap as usize, d.dev)).collect();
+    let agents = if a.agent_per_gpu {
+        regions
+            .iter()
+            .map(|&r| {
+                let name = format!("{}-g{}", a.agent_name, r.2);
+                ClientAgent::with_regions(&name, &a.backend, &[r], true, a.nixl_progress_delay_us)
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        vec![ClientAgent::with_regions(&a.agent_name, &a.backend, &regions, true, a.nixl_progress_delay_us)?]
+    };
+    let mds = agents.iter().map(|g| g.metadata()).collect::<Result<Vec<_>, _>>()?;
+    let agent = agents[0].clone();
+    let md = mds[0].clone();
     let chunk = a.chunk_mib << 20;
-    let client = Client::new(
-        Config {
-            agent: a.agent_name.clone(),
-            proxies: a.proxies.clone(),
-            chunk,
-            stripe: a.stripe,
-            notif_grace: Duration::from_millis(a.notif_grace_ms),
-            timeout: Duration::from_secs(3600),
-            pump_idle: Duration::from_micros(a.pump_idle_us),
-        },
-        dest,
-        agent.clone(),
-    )?;
-    client.register(&md).await?;
+    let cfg = Config {
+        agent: a.agent_name.clone(),
+        proxies: a.proxies.clone(),
+        chunk,
+        stripe: a.stripe,
+        notif_grace: Duration::from_millis(a.notif_grace_ms),
+        timeout: Duration::from_secs(3600),
+        pump_idle: Duration::from_micros(a.pump_idle_us),
+    };
+    let client = if a.agent_per_gpu {
+        let srcs = agents
+            .iter()
+            .map(|g| (g.name().to_string(), g.clone() as std::sync::Arc<dyn adit_client::completion::NotifSource>))
+            .collect();
+        let c = Client::with_agents(cfg, dests.clone(), srcs)?;
+        c.register_each(&mds).await?;
+        c
+    } else {
+        let c = Client::with_dests(cfg, dests.clone(), agent.clone())?;
+        c.register(&md).await?;
+        c
+    };
     eprintln!(
-        "# gpu={} agent={} metadata_bytes={} waves={} buffer={cap}",
-        gpu.name(),
+        "# gpus={}x{} devices={devices:?} agent={} metadata_bytes={} waves={} buffer_per_gpu={cap}",
+        gpus.len(),
+        gpus[0].name(),
         agent.name(),
         md.len(),
         waves.len()
@@ -176,15 +248,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut placed: Option<u64> = Some(0);
         let (mut bad, mut partial, mut notes) = (0usize, 0usize, Vec::<String>::new());
         let mut perf_note = String::new();
+        let mut rails: BTreeMap<String, u64> = BTreeMap::new();
         for wave in &waves {
-            gpu.zero(&mut buf)?;
+            for (g, b) in gpus.iter().zip(bufs.iter_mut()) {
+                g.zero(b)?;
+            }
             let win = Window::start(&a.perf_events);
             let t0 = Instant::now();
-            let results: Vec<_> = futures::stream::iter(wave.iter().map(|&(i, off)| {
+            let segs = wave.iter().enumerate().flat_map(|(w, (i, segs))| segs.iter().map(move |sg| (w, *i, sg)));
+            let results: Vec<_> = futures::stream::iter(segs.map(|(w, i, sg)| {
                 let (p, client) = (&plan[i], &client);
                 async move {
                     let path = format!("{}/{}", p.m.bucket, p.m.key);
-                    (i, off, client.get(&path, &p.url, 0..p.m.size, off).await)
+                    (w, client.get_into(sg.gpu, &path, &p.url, sg.range.clone(), sg.off).await)
                 }
             }))
             .buffer_unordered(a.concurrency)
@@ -204,30 +280,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => mem_ok = false,
             }
             perf_note = m.perf_note.clone();
-            // Verify every delivered object of the wave in one GPU launch.
-            let mut delivered = Vec::new();
-            for (i, off, r) in results {
-                let p = &plan[i];
-                objects += 1;
+            for (d, v) in m.placed_by_dev() {
+                *rails.entry(d).or_default() += v;
+            }
+            // An object is delivered when every one of its segments is.
+            let mut failed = vec![None::<String>; wave.len()];
+            let mut reqs = vec![0u64; wave.len()];
+            for (w, r) in results {
                 match r {
-                    Ok(rep) => {
-                        bytes += rep.bytes;
-                        s3_requests += rep.s3_requests;
-                        delivered.push((i, off));
+                    Ok(rep) => reqs[w] += rep.s3_requests,
+                    Err(e) => failed[w] = Some(e.to_string()),
+                }
+            }
+            for (w, (i, _)) in wave.iter().enumerate() {
+                objects += 1;
+                match &failed[w] {
+                    None => {
+                        bytes += plan[*i].m.size;
+                        s3_requests += reqs[w];
                     }
-                    Err(e) => {
+                    Some(e) => {
                         partial += 1;
-                        notes.push(format!("{}: {e}", p.m.key));
+                        notes.push(format!("{}: {e}", plan[*i].m.key));
                     }
                 }
             }
-            let spans: Vec<_> =
-                delivered.iter().map(|&(i, off)| (dest.addr + off, plan[i].m.size, plan[i].m.part_size)).collect();
-            for (&(i, _), parts) in delivered.iter().zip(gpu.sha256_parts_many(&spans)?) {
-                let v = plan[i].m.check(&parts);
+            // Verify: one launch per GPU over all its delivered segments, then each object's digests
+            // in segment order.
+            let mut digests: Vec<Vec<Vec<adit_client::oracle::Digest32>>> =
+                wave.iter().map(|(_, segs)| vec![vec![]; segs.len()]).collect();
+            for (g, gpu) in gpus.iter().enumerate() {
+                let mine: Vec<(usize, usize, &Seg)> = wave
+                    .iter()
+                    .enumerate()
+                    .filter(|(w, _)| failed[*w].is_none())
+                    .flat_map(|(w, (_, segs))| segs.iter().enumerate().map(move |(k, sg)| (w, k, sg)))
+                    .filter(|(_, _, sg)| sg.gpu == g)
+                    .collect();
+                let spans: Vec<_> = mine
+                    .iter()
+                    .map(|&(w, _, sg)| {
+                        (dests[g].addr + sg.off, sg.range.end - sg.range.start, plan[wave[w].0].m.part_size)
+                    })
+                    .collect();
+                for (&(w, k, _), parts) in mine.iter().zip(gpu.sha256_parts_many(&spans)?) {
+                    digests[w][k] = parts;
+                }
+            }
+            for (w, (i, _)) in wave.iter().enumerate() {
+                if failed[w].is_some() {
+                    continue;
+                }
+                let parts: Vec<_> = digests[w].concat();
+                let v = plan[*i].m.check(&parts);
                 if !v.matches {
                     bad += 1;
-                    notes.push(format!("MISMATCH {} parts {:?}", plan[i].m.key, v.bad_parts));
+                    notes.push(format!("MISMATCH {} parts {:?}", plan[*i].m.key, v.bad_parts));
                 }
             }
         }
@@ -235,6 +343,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let placement = adit_client::counters::placement(placed, bytes);
         notes
             .push(format!("placement={placement} nic_placed_bytes={}", placed.map_or("n/a".into(), |p| p.to_string())));
+        if !rails.is_empty() {
+            notes.push(format!("rails={}", adit_client::counters::rails_note(&rails)));
+        }
         if placement == "emulated" && !a.allow_emulated {
             eprintln!("run {run}: bytes were not placed by the NIC (placement=emulated); see #26");
             any_bad = true;
@@ -282,13 +393,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         row.set(
             "config",
             format!(
-                "backend={};chunk={chunk};stripe={};concurrency={};buffer_gib={};waves={};gpu={};pump_idle_us={};nixl_progress_delay_us={}",
+                "backend={};agent_per_gpu={};chunk={chunk};stripe={};concurrency={};buffer_gib={};waves={};gpu={};devices={};spread={};pump_idle_us={};nixl_progress_delay_us={}",
                 a.backend,
+                a.agent_per_gpu,
                 a.stripe,
                 a.concurrency,
                 a.buffer_gib,
                 waves.len(),
-                gpu.name(),
+                gpus[0].name(),
+                devices.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(" "),
+                a.spread,
                 a.pump_idle_us,
                 a.nixl_progress_delay_us
             ),
@@ -303,4 +417,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("oracle mismatch or partial transfer: see notes".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(key: &str, size: u64, part: u64) -> PlanEntry {
+        let m = serde_json::json!({"bucket": "b", "key": key, "size": size, "part_size": part,
+            "sha256": "", "parts": [], "composite": "", "url": "u"});
+        serde_json::from_value(m).unwrap()
+    }
+
+    #[test]
+    fn split_is_part_aligned_and_covers() {
+        let r = split(100, 8, 3);
+        assert_eq!(r, vec![0..40, 40..80, 80..100]);
+        assert_eq!(split(8, 8, 4), vec![0..8]);
+        assert_eq!(split(64, 8, 8).len(), 8);
+    }
+
+    #[test]
+    fn whole_objects_balance_across_gpus() {
+        let plan: Vec<_> = (0..4).map(|k| entry(&k.to_string(), 4096, 4096)).collect();
+        let w = waves(&plan, 8192, 2, false).unwrap();
+        assert_eq!(w.len(), 1);
+        let gpus: Vec<usize> = w[0].iter().map(|(_, s)| s[0].gpu).collect();
+        assert_eq!(gpus, vec![0, 1, 0, 1]);
+        assert_eq!(w[0][2].1[0].off, 4096);
+        // A fifth object starts a new wave.
+        let plan: Vec<_> = (0..5).map(|k| entry(&k.to_string(), 4096, 4096)).collect();
+        assert_eq!(waves(&plan, 8192, 2, false).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn spread_puts_one_segment_per_gpu() {
+        let plan = vec![entry("t1", 64 << 20, 8 << 20)];
+        let w = waves(&plan, 16 << 20, 4, true).unwrap();
+        let segs = &w[0][0].1;
+        assert_eq!(segs.len(), 4);
+        for (k, sg) in segs.iter().enumerate() {
+            assert_eq!(sg.gpu, k);
+            assert_eq!(sg.off, 0);
+            assert_eq!(sg.range, (k as u64) * (16 << 20)..(k as u64 + 1) * (16 << 20));
+        }
+        assert!(waves(&plan, 8 << 20, 4, true).is_err());
+    }
 }

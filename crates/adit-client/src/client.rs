@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Requests: one object (or a range of one) into the registered destination, from one proxy or
-//! striped across several.
+//! Requests: one object (or a range of one) into a registered destination, from one proxy or
+//! striped across several. A client may hold several destinations (one per GPU, G2); each request
+//! lands in one of them.
 //!
 //! **Failure semantics.** A get returns `Ok` only when (a) every proxy involved answered `200`
 //! and (b) notifications cover exactly the requested destination bytes, with no overlap. Anything
@@ -67,15 +68,19 @@ pub enum GetError {
 pub struct Client {
     cfg: Config,
     http: reqwest::Client,
-    dest: Dest,
+    dests: Vec<Dest>,
+    /// Agent name per destination; empty means `cfg.agent` for all.
+    agents: Vec<String>,
     tracker: Arc<Tracker>,
     next_req: AtomicU64,
     pump: tokio::task::JoinHandle<()>,
+    extra_pumps: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl Drop for Client {
     fn drop(&mut self) {
         self.pump.abort();
+        self.extra_pumps.iter().for_each(|p| p.abort());
     }
 }
 
@@ -89,8 +94,14 @@ struct StripeAnswer {
 impl Client {
     /// `dest` is the registered destination region; `notifs` delivers its notifications.
     pub fn new(cfg: Config, dest: Dest, notifs: Arc<dyn NotifSource>) -> Result<Self, GetError> {
-        if cfg.proxies.is_empty() || cfg.chunk == 0 {
-            return Err(GetError::Invalid("need at least one proxy and a positive chunk".into()));
+        Self::with_dests(cfg, vec![dest], notifs)
+    }
+
+    /// As [`Client::new`] with several registered destinations, addressed by index in
+    /// [`Client::get_into`]. Notification offsets are relative to the request's destination.
+    pub fn with_dests(cfg: Config, dests: Vec<Dest>, notifs: Arc<dyn NotifSource>) -> Result<Self, GetError> {
+        if cfg.proxies.is_empty() || cfg.chunk == 0 || dests.is_empty() {
+            return Err(GetError::Invalid("need at least one proxy, one destination and a positive chunk".into()));
         }
         let http =
             reqwest::Client::builder().timeout(cfg.timeout).build().map_err(|e| GetError::Invalid(e.to_string()))?;
@@ -101,7 +112,16 @@ impl Client {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_micros() as u64)
             .unwrap_or(1);
-        Ok(Self { cfg, http, dest, tracker, next_req: AtomicU64::new(seed), pump })
+        Ok(Self {
+            cfg,
+            http,
+            dests,
+            agents: vec![],
+            tracker,
+            next_req: AtomicU64::new(seed),
+            pump,
+            extra_pumps: vec![],
+        })
     }
 
     pub fn tracker(&self) -> &Tracker {
@@ -112,10 +132,54 @@ impl Client {
         &self.cfg
     }
 
+    pub fn dests(&self) -> &[Dest] {
+        &self.dests
+    }
+
+    /// One NIXL agent per destination (G2, #48): destination `i` is registered by `agents[i].0`,
+    /// whose notifications `agents[i].1` delivers. A single agent holding several VRAM regions
+    /// lost notifications for every region but the first under concurrent writes (p5en, NIXL
+    /// 1.2.0 LIBFABRIC); one region per agent is the configuration G0/G1 validated.
+    pub fn with_agents(
+        cfg: Config,
+        dests: Vec<Dest>,
+        agents: Vec<(String, Arc<dyn NotifSource>)>,
+    ) -> Result<Self, GetError> {
+        if agents.len() != dests.len() || agents.is_empty() {
+            return Err(GetError::Invalid("need one agent per destination".into()));
+        }
+        let mut it = agents.into_iter();
+        let (first, src) = it.next().unwrap();
+        let mut c = Self::with_dests(cfg, dests, src)?;
+        c.agents.push(first);
+        for (name, src) in it {
+            c.agents.push(name);
+            c.extra_pumps.push(c.tracker.pump(src, c.cfg.pump_idle));
+        }
+        Ok(c)
+    }
+
+    fn agent_for(&self, dest: usize) -> &str {
+        self.agents.get(dest).map_or(self.cfg.agent.as_str(), String::as_str)
+    }
+
+    /// Send each per-destination agent's metadata (`metadata[i]` for destination `i`) to every
+    /// proxy.
+    pub async fn register_each(&self, metadata: &[Vec<u8>]) -> Result<(), GetError> {
+        for (i, md) in metadata.iter().enumerate() {
+            self.register_as(self.agent_for(i), md).await?;
+        }
+        Ok(())
+    }
+
     /// Send our agent metadata to every proxy.
     pub async fn register(&self, metadata: &[u8]) -> Result<(), GetError> {
+        self.register_as(&self.cfg.agent.clone(), metadata).await
+    }
+
+    async fn register_as(&self, agent: &str, metadata: &[u8]) -> Result<(), GetError> {
         for p in &self.cfg.proxies {
-            let url = format!("{p}{}/{}", proto::AGENTS_PATH, self.cfg.agent);
+            let url = format!("{p}{}/{}", proto::AGENTS_PATH, agent);
             let r = self.http.put(&url).body(metadata.to_vec()).send().await;
             match r {
                 Ok(r) if r.status().is_success() => {}
@@ -130,8 +194,11 @@ impl Client {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn one(
         &self,
+        dest: &Dest,
+        agent: &str,
         proxy: &str,
         path: &str,
         url: &str,
@@ -143,8 +210,8 @@ impl Client {
             .http
             .get(format!("{proxy}/{path}"))
             .header(proto::H_PRESIGNED_URL, url)
-            .header(proto::H_AGENT, &self.cfg.agent)
-            .header(proto::H_DEST, self.dest.to_string())
+            .header(proto::H_AGENT, agent)
+            .header(proto::H_DEST, dest.to_string())
             .header(proto::H_DEST_OFFSET, dest_offset.to_string())
             .header(proto::H_RANGE, proto::format_range(&range))
             .header(proto::H_REQUEST_ID, req.to_string())
@@ -166,14 +233,24 @@ impl Client {
     }
 
     /// Fetch object bytes `range` (via presigned `url`; `path` is `bucket/key`, for logs and
-    /// proxy routing) into the destination at `dest_offset`.
+    /// proxy routing) into the first destination at `dest_offset`.
     pub async fn get(&self, path: &str, url: &str, range: Range<u64>, dest_offset: u64) -> Result<Report, GetError> {
+        self.get_into(0, path, url, range, dest_offset).await
+    }
+
+    /// As [`Client::get`], into destination `dest` (an index into [`Client::dests`]).
+    pub async fn get_into(
+        &self,
+        dest: usize,
+        path: &str,
+        url: &str,
+        range: Range<u64>,
+        dest_offset: u64,
+    ) -> Result<Report, GetError> {
+        let d = self.dests.get(dest).ok_or_else(|| GetError::Invalid(format!("no destination {dest}")))?;
         let want = range.end.checked_sub(range.start).ok_or_else(|| GetError::Invalid("inverted range".into()))?;
-        if dest_offset.checked_add(want).is_none_or(|e| e > self.dest.len) {
-            return Err(GetError::Invalid(format!(
-                "{want} bytes at offset {dest_offset} overrun dest of {}",
-                self.dest.len
-            )));
+        if dest_offset.checked_add(want).is_none_or(|e| e > d.len) {
+            return Err(GetError::Invalid(format!("{want} bytes at offset {dest_offset} overrun dest of {}", d.len)));
         }
         let start = Instant::now();
         let req = self.next_req.fetch_add(1, Relaxed);
@@ -184,7 +261,7 @@ impl Client {
         let stripes = if self.cfg.stripe { stripe(range.clone(), n, self.cfg.chunk) } else { vec![range.clone()] };
         let futs = stripes.iter().enumerate().map(|(i, s)| {
             let proxy = &self.cfg.proxies[(req as usize + i) % n];
-            self.one(proxy, path, url, s.clone(), dest_offset + (s.start - range.start), req)
+            self.one(d, self.agent_for(dest), proxy, path, url, s.clone(), dest_offset + (s.start - range.start), req)
         });
         let answers = futures::future::join_all(futs).await;
         let all_ok = answers.iter().all(|a| a.ok);

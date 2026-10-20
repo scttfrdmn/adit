@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -95,6 +97,15 @@ type Spec struct {
 	Log   io.Writer
 	// DryRun prints spawn commands instead of launching.
 	DryRun bool
+	// ProxySpot launches proxies on spot first, falling back to on-demand when spot has no
+	// capacity or quota. Size Proxy.CostLimit for on-demand: a cap sized for spot kills an
+	// on-demand fallback early.
+	ProxySpot bool
+	// ProxyStart is the first proxy index, so a later `fleet up --clients 0` adds proxies
+	// adit-<fleet>-proxy-<start>… next to boxes already placed.
+	ProxyStart int
+
+	mu sync.Mutex // serializes Log
 }
 
 // Box is one launched instance.
@@ -104,6 +115,8 @@ type Box struct {
 }
 
 func (s *Spec) logf(format string, a ...any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.Log != nil {
 		_, _ = fmt.Fprintf(s.Log, format+"\n", a...)
 	}
@@ -369,6 +382,7 @@ func (s *Spec) Up(ctx context.Context, ec2For EC2For) ([]Box, error) {
 	launch := func(r Role, i int, c Candidate, subnet, sg string) (Box, string, error) {
 		ami := r.AMI
 		if ami == "" && s.AMIFor != nil {
+			var err error
 			if ami, err = s.AMIFor(ctx, c.Region, r); err != nil {
 				return Box{}, "", err
 			}
@@ -431,18 +445,46 @@ func (s *Spec) Up(ctx context.Context, ec2For EC2For) ([]Box, error) {
 		}
 		boxes = append(boxes, placed...)
 		// Proxies follow the clients. They need not share the clients' spot mode.
-		pc := Candidate{Region: c.Region, AZ: c.AZ}
-		for i := range s.Proxy.Count {
+		// Proxies launch in parallel, the client is already billing; the first alone, so spawn's
+		// one-time setup (key pair, roles) is not raced.
+		type res struct {
+			b   Box
+			err error
+		}
+		results := make([]res, s.ProxyStart+s.Proxy.Count)
+		var wg sync.WaitGroup
+		proxy := func(i int) {
+			pc := Candidate{Region: c.Region, AZ: c.AZ, Spot: s.ProxySpot}
 			b, out, err := launch(s.Proxy, i, pc, subnet, sg)
 			if err != nil && isCapacity(out) {
+				s.logf("# %s %s-%d: no capacity or quota (spot=%v); trying spot=%v", c.AZ, s.Proxy.InstanceType, i, pc.Spot, !pc.Spot)
 				pc.Spot = !pc.Spot
-				s.logf("# %s %s: no capacity on-demand; trying spot", c.AZ, s.Proxy.InstanceType)
 				b, _, err = launch(s.Proxy, i, pc, subnet, sg)
 			}
-			if err != nil {
-				return boxes, fmt.Errorf("launch %s in %s next to the clients: %w", b.Name, c.AZ, err)
+			results[i] = res{b, err}
+		}
+		if s.Proxy.Count > 0 {
+			proxy(s.ProxyStart)
+		}
+		for i := s.ProxyStart + 1; i < s.ProxyStart+s.Proxy.Count; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				proxy(i)
+			}()
+		}
+		wg.Wait()
+		var errs []error
+		for _, r := range results {
+			if r.b.InstanceID != "" {
+				boxes = append(boxes, r.b)
 			}
-			boxes = append(boxes, b)
+			if r.err != nil {
+				errs = append(errs, fmt.Errorf("launch %s in %s next to the clients: %w", r.b.Name, c.AZ, r.err))
+			}
+		}
+		if len(errs) > 0 {
+			return boxes, errors.Join(errs...)
 		}
 		return boxes, nil
 	}
@@ -533,31 +575,65 @@ func WaitGone(ctx context.Context, spawn, profile, fleet string, every time.Dura
 	}
 }
 
-// VerifyEFA fails unless every box's primary interface is an EFA. A launch
-// flag is not evidence: spawn once accepted --efa and attached a plain ENA.
+// VerifyEFA fails unless every box has as many EFA interfaces (`efa` or
+// `efa-only`) as its instance type supports. A launch flag is not evidence:
+// spawn once accepted --efa and attached a plain ENA (spawn#1112), and attached
+// one EFA to multi-card types that have several (spawn#661).
 func VerifyEFA(ctx context.Context, ec2For EC2For, boxes []Box) error {
 	var bad []string
+	maxFor := map[string]int{}
 	for _, b := range boxes {
-		out, err := ec2For(b.Region).DescribeInstances(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{b.InstanceID}})
+		e := ec2For(b.Region)
+		out, err := e.DescribeInstances(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{b.InstanceID}})
 		if err != nil {
 			return fmt.Errorf("describe %s: %w", b.Name, err)
 		}
-		efa := false
 		for _, r := range out.Reservations {
 			for _, in := range r.Instances {
-				for _, ni := range in.NetworkInterfaces {
-					if aws.ToString(ni.InterfaceType) == "efa" {
-						efa = true
+				t := string(in.InstanceType)
+				if _, ok := maxFor[t]; !ok {
+					it, err := e.DescribeInstanceTypes(ctx, &ec2.DescribeInstanceTypesInput{InstanceTypes: []types.InstanceType{in.InstanceType}})
+					if err != nil || len(it.InstanceTypes) == 0 {
+						return fmt.Errorf("describe instance type %s: %v", t, err)
 					}
+					maxFor[t] = maxEFA(it.InstanceTypes[0])
+				}
+				if msg := efaShortfall(efaCount(in.NetworkInterfaces), maxFor[t]); msg != "" {
+					bad = append(bad, b.Name+" ("+t+": "+msg+")")
 				}
 			}
 		}
-		if !efa {
-			bad = append(bad, b.Name)
-		}
 	}
 	if len(bad) > 0 {
-		return fmt.Errorf("no EFA interface on %s: retire the fleet (aditctl fleet down) and check the spawn version", strings.Join(bad, ", "))
+		return fmt.Errorf("EFA interfaces missing on %s: retire the fleet (aditctl fleet down) and check the spawn version", strings.Join(bad, ", "))
 	}
 	return nil
+}
+
+func efaCount(nis []types.InstanceNetworkInterface) int {
+	n := 0
+	for _, ni := range nis {
+		if t := aws.ToString(ni.InterfaceType); t == "efa" || t == "efa-only" {
+			n++
+		}
+	}
+	return n
+}
+
+func maxEFA(it types.InstanceTypeInfo) int {
+	if it.NetworkInfo == nil || it.NetworkInfo.EfaInfo == nil {
+		return 0
+	}
+	return int(aws.ToInt32(it.NetworkInfo.EfaInfo.MaximumEfaInterfaces))
+}
+
+// efaShortfall is "" when have meets max (and max is at least one), else why not.
+func efaShortfall(have, max int) string {
+	switch {
+	case max == 0:
+		return "type has no EFA"
+	case have < max:
+		return fmt.Sprintf("%d of %d EFA interfaces", have, max)
+	}
+	return ""
 }
