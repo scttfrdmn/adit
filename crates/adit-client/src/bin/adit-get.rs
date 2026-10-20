@@ -427,6 +427,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             writeln!(f, "{}", row.line())?;
         }
     }
+    // Teardown in dependency order (#51): stop the notification pumps and wait for them, release
+    // every agent (deregistering its memory), and only then free the GPU buffers.
+    client.shutdown().await;
+    drop(agent);
+    drop(agents);
+    drop(bufs);
     if any_bad {
         return Err("oracle mismatch or partial transfer: see notes".into());
     }

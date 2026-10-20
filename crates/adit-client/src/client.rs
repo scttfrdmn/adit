@@ -132,6 +132,23 @@ impl Client {
         })
     }
 
+    /// Stop the notification pumps and wait until they have exited, so every reference they hold
+    /// to the notification sources (the NIXL agents) is gone. Call it before freeing the memory
+    /// those agents registered: `Drop` only aborts the pumps, and an aborted tokio task's future,
+    /// with its agent reference, can outlive `main`'s locals, so the GPU buffers would be freed
+    /// while still registered with the NIC (EFA "local memory registration is invalid", abort at
+    /// exit; G2 rerun, #51).
+    pub async fn shutdown(mut self) {
+        let mut all = vec![std::mem::replace(&mut self.pump, tokio::spawn(async {}))];
+        all.append(&mut self.extra_pumps);
+        for p in &all {
+            p.abort();
+        }
+        for p in all {
+            let _ = p.await;
+        }
+    }
+
     pub fn tracker(&self) -> &Tracker {
         &self.tracker
     }
