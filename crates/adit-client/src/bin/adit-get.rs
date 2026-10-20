@@ -244,6 +244,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for run in 1..=a.runs {
         let (mut wall, mut bytes, mut s3_requests, mut objects) = (Duration::ZERO, 0u64, 0u64, 0usize);
         let (mut host_cpu, mut proc_cpu, mut efa_rx) = (0f64, 0f64, 0u64);
+        let mut host_ticks = 0f64;
         let (mut mem_rd, mut mem_wr, mut mem_ok) = (0u64, 0u64, true);
         let mut placed: Option<u64> = Some(0);
         let (mut bad, mut partial, mut notes) = (0usize, 0usize, Vec::<String>::new());
@@ -269,6 +270,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             wall += t0.elapsed();
             let m = win.stop();
             host_cpu += m.host_cpu_s.unwrap_or(f64::NAN);
+            host_ticks += m.host_cpu_ticks_s.unwrap_or(f64::NAN);
             proc_cpu += m.proc_cpu_s.unwrap_or(f64::NAN);
             efa_rx += m.efa_rx_bytes.unwrap_or(0);
             placed = placed.zip(m.nic_placed_bytes).map(|(a, b)| a + b);
@@ -343,6 +345,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let placement = adit_client::counters::placement(placed, bytes);
         notes
             .push(format!("placement={placement} nic_placed_bytes={}", placed.map_or("n/a".into(), |p| p.to_string())));
+        notes.push(format!("host_cpu_ticks_s={host_ticks:.2}"));
         if !rails.is_empty() {
             notes.push(format!("rails={}", adit_client::counters::rails_note(&rails)));
         }

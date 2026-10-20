@@ -8,10 +8,11 @@
 #   health    hack/health.sh per proxy against the client, ALL_RAILS=1 (both proxy EFA devices)
 #   start     start adit-proxy on every proxy (PROXY_ARGS) and read its configuration back
 #   plans     presign T2, T2-64 (its first 64 objects) and T1 on the client
-#   ladder    stripe ladder: ARMS (E8 E4 E2 E1) interleaved over CYCLES on T2, all GPUs
+#   ladder    proxy ladder: ARMS (E8 E4 E2 E1) interleaved over CYCLES on T2, all GPUs
 #   sweep     at E<N>: chunk 4/16 MiB and slots SWEEP_SLOTS, one T2 read each (restarts the proxies)
 #   t1        T1 at E<N>, striped and spread over all GPUs, 3 runs
-#   ceiling   H-ceiling: B512 B1024 E<N> interleaved on T2-64, all GPUs
+#   bsweep    path B tuning grid on T2-64 (threads x task size x objects in flight), all GPUs
+#   ceiling   H-ceiling: B512 B1024 E<N> interleaved on T2-64, all GPUs (CEIL_ARMS to override)
 #   collect   copy every results CSV and proxy /metrics off the boxes, push to the bench bucket
 #
 #   ADIT_SPAWN=... STEPS="refresh health start plans ladder" bash hack/g2.sh <fleet> [proxies=8]
@@ -159,19 +160,28 @@ if want t1; then
     client_run t1 "PLAN=/tmp/t1-plan.jsonl PROXIES=$URLS ARMS=E$N CYCLES=3 STRIPE=1 E_ARGS=\"$E_ARGS --spread\" DEVICES=$DEVS BUF_GIB=16 E_CONCURRENCY=$(( $(tr -cd , <<<"$DEVS" | wc -c) + 1 )) OUT=/tmp/g2-t1.csv bash bench/paths/interleave.sh T1"
 fi
 
+if want bsweep; then
+    # Path B at its best on this client before H-ceiling (law 3): threads x task size x objects in
+    # flight on T2-64, 8 GPUs, one read each, cold. BSWEEP_* override the grid.
+    log "bsweep: KvikIO RemoteFile grid on T2-64"
+    client_run bsweep "for th in ${BSWEEP_THREADS:-128 512 1024}; do for ts in ${BSWEEP_TASK_MIB:-16 64}; do for cc in ${BSWEEP_CONC:-8 32}; do sudo bash hack/drop-caches.sh >/dev/null; /opt/adit-venv/bin/python bench/paths/lib/gpuload.py --mode remotefile --plan /tmp/t2-64-plan.jsonl --threads \$th --task-size-mib \$ts --concurrency \$cc --devices $DEVS --buffer-gib $BUF_GIB --region $REGION --runs 1 --meta path=B --meta workload=T2-64 --meta cold=1 --meta client_instance=p5en.48xlarge --out /tmp/g2-bsweep.csv 2>&1 | tail -1 | cut -d, -f13-15,23-24; done; done; done"
+fi
+
 if want ceiling; then
     log "ceiling: B512 B1024 E$N on T2-64, all GPUs"
-    client_run ceiling "PLAN=/tmp/t2-64-plan.jsonl PROXIES=$URLS ARMS=\"B512 B1024 E$N\" STRIPE=0 E_ARGS=\"$E_ARGS\" B_CONCURRENCY=${B_CONCURRENCY:-16} $common OUT=/tmp/g2-ceiling.csv bash bench/paths/interleave.sh T2-64"
+    client_run ceiling "PLAN=/tmp/t2-64-plan.jsonl PROXIES=$URLS ARMS=\"${CEIL_ARMS:-B512 B1024 E$N}\" STRIPE=0 E_ARGS=\"$E_ARGS\" B_CONCURRENCY=${B_CONCURRENCY:-16} B_TASK_MIB=${B_TASK_MIB:-64} $common OUT=/tmp/g2-ceiling.csv bash bench/paths/interleave.sh T2-64"
 fi
 
 if want collect; then
-    for f in ladder sweep t1 ceiling; do
+    for f in ladder sweep t1 ceiling bsweep; do
         on "$CLIENT" "test -f /tmp/g2-$f.csv && cat /tmp/g2-$f.csv" >"$OUT/g2-$f.csv"
         on "$CLIENT" "test -f /tmp/g2-$f.order && cat /tmp/g2-$f.order" >"$OUT/g2-$f.order"
     done
     for k in "${!PIPS[@]}"; do
         on "$CLIENT" "curl -s http://${PIPS[$k]}:8480/metrics" >"$OUT/metrics-${PROXIES[$k]}.txt"
     done
+    # Per-arm snapshots (interleave.sh) go straight from the client to the bench bucket.
+    on "$CLIENT" "for d in /tmp/g2-*-snap; do [ -d \$d ] && aws s3 cp --recursive --quiet \$d s3://$BUCKET/adit/g2/$(basename "$OUT")/\$(basename \$d)/ --region $REGION; done; ls -d /tmp/g2-*-snap 2>/dev/null | wc -l" | sed 's/^/snapshot dirs pushed: /' | tee -a "$OUT/run.log"
     on "$CLIENT" "cat /var/lib/adit/versions; nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv" >"$OUT/client-versions.txt"
     ls -la "$OUT" | tee -a "$OUT/run.log"
 fi

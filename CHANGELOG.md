@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-arm snapshots in `bench/paths/interleave.sh`.** Every proxy's `/metrics` and the client's per-device EFA counters are saved before and after each E arm, for per-lever attribution and stall forensics (#51).
+- **EFA counters in proxy `/metrics`.** `adit-proxy` exposes its own EFA hw_counters per device (`adit_proxy_efa{dev,counter}`).
+- **`hack/g2.sh` `bsweep`** tunes path B (threads × task size × objects in flight) on the client before H-ceiling (law 3).
+
 - **`adit-get --agent-per-gpu`** gives each destination GPU its own NIXL agent. One agent holding 8 VRAM regions lost notifications for every region but the first under concurrent writes on p5en (#50).
 - **`hack/g2-place.sh`** retries placement across every approved p5en region: proxy first where clients land without proxies, and a client that lands without a proxy is retired. **`hack/bench-bucket.sh`** creates regional bench buckets configured like the us-east-2 one.
 - **G2 results** in `bench/results/paths-g2.csv` (#48): p5en client, 8 × c8gn.48xlarge proxies, T2 stripe ladder, path B on 8 GPUs, T1 spread. Partial rows are defects (#51), not results.

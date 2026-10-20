@@ -88,6 +88,7 @@ impl Window {
         let m = self.0.take().ok_or_else(|| PyRuntimeError::new_err("window already stopped"))?.stop();
         let d = PyDict::new(py);
         d.set_item("host_cpu_s", m.host_cpu_s)?;
+        d.set_item("host_cpu_ticks_s", m.host_cpu_ticks_s)?;
         d.set_item("proc_cpu_s", m.proc_cpu_s)?;
         d.set_item("efa_rx_bytes", m.efa_rx_bytes)?;
         d.set_item("host_mem_read_bytes", m.mem_read_bytes)?;

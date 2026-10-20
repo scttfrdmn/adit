@@ -34,13 +34,28 @@ E_ARGS=${E_ARGS:-}
 CHUNK_MIB=${CHUNK_MIB:-8}
 PY=${PY:-/opt/adit-venv/bin/python}
 n=${#ARMS[@]}
+# Per-arm snapshots (law 6, #51): every proxy's /metrics (pipeline histograms, its EFA counters) and
+# the client's EFA hw_counters per device, before and after each E arm, under ${OUT%.csv}-snap/.
+SNAP=${OUT%.csv}-snap
+snap() {
+    local tag=$1; shift
+    mkdir -p "$SNAP/$tag"
+    local i=0
+    for p in "$@"; do
+        curl -s -m 10 "$p/metrics" >"$SNAP/$tag/proxy-$i.txt"
+        i=$((i + 1))
+    done
+    for d in /sys/class/infiniband/*; do
+        for c in "$d"/ports/1/hw_counters/*; do printf '%s %s %s\n' "$(basename "$d")" "$(basename "$c")" "$(cat "$c")"; done
+    done >"$SNAP/$tag/client-efa.txt"
+}
 arm() {
     local a=$1 c=$2
     cold
     case $a in
         B[0-9]*)
             local th=${a#B}
-            $PY bench/paths/lib/gpuload.py --mode remotefile --plan "$PLAN" --threads "$th" --task-size-mib 64 \
+            $PY bench/paths/lib/gpuload.py --mode remotefile --plan "$PLAN" --threads "$th" --task-size-mib "${B_TASK_MIB:-64}" \
                 --devices "$DEVICES" --buffer-gib "$BUF_GIB" --concurrency "$B_CONCURRENCY" --region "$REGION" --runs 1 \
                 --meta path=B --meta "workload=$WORKLOAD" --meta "cold=$COLD" \
                 --meta "client_instance=$CLIENT_INSTANCE" --meta "commit=$COMMIT" --out "$OUT" 2>&1 | tail -1 ;;
@@ -50,11 +65,13 @@ arm() {
             local px
             px=$(IFS=,; echo "${PX[*]:0:k}")
             [[ $STRIPE == 1 && $k -gt 1 ]] && st=(--stripe)
+            snap "c$c-$a-pre" "${PX[@]:0:k}"
             # shellcheck disable=SC2086  # E_ARGS is a flag list
             adit-get --proxies "$px" "${st[@]}" --plan "$PLAN" --agent-name "il-$a-$c-$$" --devices "$DEVICES" \
                 --buffer-gib "$BUF_GIB" --chunk-mib "$CHUNK_MIB" --concurrency "$E_CONCURRENCY" --runs 1 $E_ARGS \
                 --meta path=E --meta "workload=$WORKLOAD" --meta "cold=$COLD" \
-                --meta "client_instance=$CLIENT_INSTANCE" --meta "commit=$COMMIT" --out "$OUT" 2>&1 | grep -E '^E,' | tail -1 ;;
+                --meta "client_instance=$CLIENT_INSTANCE" --meta "commit=$COMMIT" --out "$OUT" 2>&1 | grep -E '^E,' | tail -1
+            snap "c$c-$a-post" "${PX[@]:0:k}" ;;
         *) log "unknown arm $a"; return 1 ;;
     esac
 }
