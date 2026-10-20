@@ -75,7 +75,14 @@ arm() {
                 --buffer-gib "$BUF_GIB" --chunk-mib "$CHUNK_MIB" --concurrency "$E_CONCURRENCY" --runs 1 $E_ARGS \
                 --meta path=E --meta "workload=$WORKLOAD" --meta "cold=$COLD" \
                 --meta "client_instance=$CLIENT_INSTANCE" --meta "commit=$COMMIT" --out "$OUT" 2>"$SNAP/c$c-$a.stderr" | grep -E '^E,' | tail -1
-            snap "c$c-$a-post" "${PX[@]:0:k}" ;;
+            snap "c$c-$a-post" "${PX[@]:0:k}"
+            # An aborted adit-get can sit in teardown holding every GPU's buffer: the next arm would
+            # then fail with CUDA out-of-memory (G2 rerun). Wait for it to be gone (up to 180 s).
+            local w=0
+            while { pgrep -x adit-get >/dev/null || nvidia-smi --query-compute-apps=pid --format=csv,noheader | grep -q .; } && (( w < 180 )); do
+                sleep 2; w=$((w + 2))
+            done
+            (( w > 0 )) && log "arm $a cycle $c: waited ${w}s for the previous adit-get to release the GPUs" ;;
         *) log "unknown arm $a"; return 1 ;;
     esac
 }
