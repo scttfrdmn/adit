@@ -69,14 +69,18 @@ pub struct Client {
     cfg: Config,
     http: reqwest::Client,
     dests: Vec<Dest>,
+    /// Agent name per destination; empty means `cfg.agent` for all.
+    agents: Vec<String>,
     tracker: Arc<Tracker>,
     next_req: AtomicU64,
     pump: tokio::task::JoinHandle<()>,
+    extra_pumps: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl Drop for Client {
     fn drop(&mut self) {
         self.pump.abort();
+        self.extra_pumps.iter().for_each(|p| p.abort());
     }
 }
 
@@ -108,7 +112,16 @@ impl Client {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_micros() as u64)
             .unwrap_or(1);
-        Ok(Self { cfg, http, dests, tracker, next_req: AtomicU64::new(seed), pump })
+        Ok(Self {
+            cfg,
+            http,
+            dests,
+            agents: vec![],
+            tracker,
+            next_req: AtomicU64::new(seed),
+            pump,
+            extra_pumps: vec![],
+        })
     }
 
     pub fn tracker(&self) -> &Tracker {
@@ -123,10 +136,50 @@ impl Client {
         &self.dests
     }
 
+    /// One NIXL agent per destination (G2, #48): destination `i` is registered by `agents[i].0`,
+    /// whose notifications `agents[i].1` delivers. A single agent holding several VRAM regions
+    /// lost notifications for every region but the first under concurrent writes (p5en, NIXL
+    /// 1.2.0 LIBFABRIC); one region per agent is the configuration G0/G1 validated.
+    pub fn with_agents(
+        cfg: Config,
+        dests: Vec<Dest>,
+        agents: Vec<(String, Arc<dyn NotifSource>)>,
+    ) -> Result<Self, GetError> {
+        if agents.len() != dests.len() || agents.is_empty() {
+            return Err(GetError::Invalid("need one agent per destination".into()));
+        }
+        let mut it = agents.into_iter();
+        let (first, src) = it.next().unwrap();
+        let mut c = Self::with_dests(cfg, dests, src)?;
+        c.agents.push(first);
+        for (name, src) in it {
+            c.agents.push(name);
+            c.extra_pumps.push(c.tracker.pump(src, c.cfg.pump_idle));
+        }
+        Ok(c)
+    }
+
+    fn agent_for(&self, dest: usize) -> &str {
+        self.agents.get(dest).map_or(self.cfg.agent.as_str(), String::as_str)
+    }
+
+    /// Send each per-destination agent's metadata (`metadata[i]` for destination `i`) to every
+    /// proxy.
+    pub async fn register_each(&self, metadata: &[Vec<u8>]) -> Result<(), GetError> {
+        for (i, md) in metadata.iter().enumerate() {
+            self.register_as(self.agent_for(i), md).await?;
+        }
+        Ok(())
+    }
+
     /// Send our agent metadata to every proxy.
     pub async fn register(&self, metadata: &[u8]) -> Result<(), GetError> {
+        self.register_as(&self.cfg.agent.clone(), metadata).await
+    }
+
+    async fn register_as(&self, agent: &str, metadata: &[u8]) -> Result<(), GetError> {
         for p in &self.cfg.proxies {
-            let url = format!("{p}{}/{}", proto::AGENTS_PATH, self.cfg.agent);
+            let url = format!("{p}{}/{}", proto::AGENTS_PATH, agent);
             let r = self.http.put(&url).body(metadata.to_vec()).send().await;
             match r {
                 Ok(r) if r.status().is_success() => {}
@@ -145,6 +198,7 @@ impl Client {
     async fn one(
         &self,
         dest: &Dest,
+        agent: &str,
         proxy: &str,
         path: &str,
         url: &str,
@@ -156,7 +210,7 @@ impl Client {
             .http
             .get(format!("{proxy}/{path}"))
             .header(proto::H_PRESIGNED_URL, url)
-            .header(proto::H_AGENT, &self.cfg.agent)
+            .header(proto::H_AGENT, agent)
             .header(proto::H_DEST, dest.to_string())
             .header(proto::H_DEST_OFFSET, dest_offset.to_string())
             .header(proto::H_RANGE, proto::format_range(&range))
@@ -207,7 +261,7 @@ impl Client {
         let stripes = if self.cfg.stripe { stripe(range.clone(), n, self.cfg.chunk) } else { vec![range.clone()] };
         let futs = stripes.iter().enumerate().map(|(i, s)| {
             let proxy = &self.cfg.proxies[(req as usize + i) % n];
-            self.one(d, proxy, path, url, s.clone(), dest_offset + (s.start - range.start), req)
+            self.one(d, self.agent_for(dest), proxy, path, url, s.clone(), dest_offset + (s.start - range.start), req)
         });
         let answers = futures::future::join_all(futs).await;
         let all_ok = answers.iter().all(|a| a.ok);

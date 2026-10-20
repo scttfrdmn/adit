@@ -47,6 +47,10 @@ struct Args {
     /// Split every object across all destination GPUs in part-aligned segments.
     #[arg(long)]
     spread: bool,
+    /// One NIXL agent per GPU (`<agent-name>-g<dev>`), each registering only its GPU's buffer,
+    /// instead of one agent holding every buffer (#48: that lost notifications under concurrency).
+    #[arg(long)]
+    agent_per_gpu: bool,
     /// GPU destination buffer per GPU, GiB.
     #[arg(long, default_value_t = 16)]
     buffer_gib: u64,
@@ -177,23 +181,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dests: Vec<Dest> =
         bufs.iter().zip(&devices).map(|(b, &d)| Dest { addr: b.addr(), len: cap, dev: d as u64 }).collect();
     let regions: Vec<(u64, usize, u64)> = dests.iter().map(|d| (d.addr, cap as usize, d.dev)).collect();
-    let agent = ClientAgent::with_regions(&a.agent_name, &a.backend, &regions, true, a.nixl_progress_delay_us)?;
-    let md = agent.metadata()?;
+    let agents = if a.agent_per_gpu {
+        regions
+            .iter()
+            .map(|&r| {
+                let name = format!("{}-g{}", a.agent_name, r.2);
+                ClientAgent::with_regions(&name, &a.backend, &[r], true, a.nixl_progress_delay_us)
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        vec![ClientAgent::with_regions(&a.agent_name, &a.backend, &regions, true, a.nixl_progress_delay_us)?]
+    };
+    let mds = agents.iter().map(|g| g.metadata()).collect::<Result<Vec<_>, _>>()?;
+    let agent = agents[0].clone();
+    let md = mds[0].clone();
     let chunk = a.chunk_mib << 20;
-    let client = Client::with_dests(
-        Config {
-            agent: a.agent_name.clone(),
-            proxies: a.proxies.clone(),
-            chunk,
-            stripe: a.stripe,
-            notif_grace: Duration::from_millis(a.notif_grace_ms),
-            timeout: Duration::from_secs(3600),
-            pump_idle: Duration::from_micros(a.pump_idle_us),
-        },
-        dests.clone(),
-        agent.clone(),
-    )?;
-    client.register(&md).await?;
+    let cfg = Config {
+        agent: a.agent_name.clone(),
+        proxies: a.proxies.clone(),
+        chunk,
+        stripe: a.stripe,
+        notif_grace: Duration::from_millis(a.notif_grace_ms),
+        timeout: Duration::from_secs(3600),
+        pump_idle: Duration::from_micros(a.pump_idle_us),
+    };
+    let client = if a.agent_per_gpu {
+        let srcs = agents
+            .iter()
+            .map(|g| (g.name().to_string(), g.clone() as std::sync::Arc<dyn adit_client::completion::NotifSource>))
+            .collect();
+        let c = Client::with_agents(cfg, dests.clone(), srcs)?;
+        c.register_each(&mds).await?;
+        c
+    } else {
+        let c = Client::with_dests(cfg, dests.clone(), agent.clone())?;
+        c.register(&md).await?;
+        c
+    };
     eprintln!(
         "# gpus={}x{} devices={devices:?} agent={} metadata_bytes={} waves={} buffer_per_gpu={cap}",
         gpus.len(),
@@ -369,8 +393,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         row.set(
             "config",
             format!(
-                "backend={};chunk={chunk};stripe={};concurrency={};buffer_gib={};waves={};gpu={};devices={};spread={};pump_idle_us={};nixl_progress_delay_us={}",
+                "backend={};agent_per_gpu={};chunk={chunk};stripe={};concurrency={};buffer_gib={};waves={};gpu={};devices={};spread={};pump_idle_us={};nixl_progress_delay_us={}",
                 a.backend,
+                a.agent_per_gpu,
                 a.stripe,
                 a.concurrency,
                 a.buffer_gib,
