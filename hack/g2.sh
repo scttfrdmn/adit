@@ -141,7 +141,7 @@ if want confirm50; then
     # and pinned (one proxy per agent). The NIXL collision theory predicts "Duplicate fragment
     # received" warnings and partial objects only in the unpinned arm.
     log "confirm50: E$N on T2-64, unpinned vs pinned"
-    client_run confirm50 "export NIXL_LOG_LEVEL=WARN; for m in unpinned pinned; do f=''; [ \$m = pinned ] && f=--pin-gpu-proxy; sudo bash hack/drop-caches.sh >/dev/null; adit-get --proxies $URLS --plan /tmp/t2-64-plan.jsonl --agent-name c50\$m --agent-per-gpu \$f --devices $DEVS --buffer-gib $BUF_GIB --concurrency $E_CONCURRENCY --runs 1 --nixl-progress-delay-us 100 --meta path=E --meta workload=T2-64 --meta cold=1 --out /tmp/g2-confirm50.csv 2>/tmp/c50-\$m.err | grep -E '^E,' | cut -d, -f11-15,23; echo \$m duplicate_fragment_warnings=\$(grep -c 'Duplicate fragment' /tmp/c50-\$m.err); done"
+    client_run confirm50 "PLAN=/tmp/t2-64-plan.jsonl PROXIES=$URLS DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY OUT=/tmp/g2-confirm50.csv bash bench/paths/confirm50.sh T2-64"
 fi
 
 if want ladder; then
