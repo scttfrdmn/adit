@@ -78,22 +78,23 @@ start_proxies() {
 }
 
 client_run() {
-    # Long work runs under bgrun on the client (spawn connect block-buffers); poll its output.
-    # BUCKET and REGION travel with the command: the on-box runners region-check and read them
-    # (G2 #48 ran its on-box checks against the default bucket because they did not).
+    # Long work runs under bgrun on the client (spawn connect block-buffers); poll until its process
+    # exits (not until a marker line: a command that fails to parse never prints one). BUCKET and
+    # REGION are exported to it: the on-box runners region-check and read them (G2 #48 ran its
+    # on-box checks against the default bucket when they were not).
     local name=$1 cmd=$2
-    on "$CLIENT" "cd $REPO && ulimit -n \$(ulimit -Hn) && bgrun -o /tmp/g2-$name.out bash -c 'BUCKET=$BUCKET REGION=$REGION $cmd; echo EXIT=\$?'" >/dev/null
+    local pid
+    pid=$(on "$CLIENT" "cd $REPO && ulimit -n \$(ulimit -Hn) && bgrun -o /tmp/g2-$name.out bash -c 'export BUCKET=$BUCKET REGION=$REGION; $cmd; echo EXIT=\$?'" | grep -o 'pid=[0-9]*' | cut -d= -f2)
+    [[ -n $pid ]] || { log "$name: did not start"; return 1; }
     local t0=$SECONDS
     while :; do
         sleep 30
-        local tail
-        tail=$(on "$CLIENT" "tail -2 /tmp/g2-$name.out")
-        echo "$tail" | tail -1 | sed "s/^/  $name: /"
-        grep -q '^EXIT=' <<<"$tail" && break
+        on "$CLIENT" "tail -1 /tmp/g2-$name.out" | tail -1 | sed "s/^/  $name: /"
+        on "$CLIENT" "kill -0 $pid 2>/dev/null && echo running" | grep -q running || break
         (( SECONDS - t0 > ${STEP_TIMEOUT:-3600} )) && { log "$name: still running after ${STEP_TIMEOUT:-3600}s; leaving it"; break; }
     done
     on "$CLIENT" "cat /tmp/g2-$name.out" >"$OUT/$name.out"
-    log "$name: $(grep '^EXIT=' "$OUT/$name.out")"
+    log "$name: $(grep -E '^EXIT=|syntax error|command not found' "$OUT/$name.out" | head -2 | tr '\n' ' ')"
     push
 }
 
@@ -173,7 +174,7 @@ if want bsweep; then
     # Path B at its best on this client before H-ceiling (law 3): threads x task size x objects in
     # flight on T2-64, 8 GPUs, one read each, cold. BSWEEP_* override the grid.
     log "bsweep: KvikIO RemoteFile grid on T2-64"
-    client_run bsweep "for th in ${BSWEEP_THREADS:-128 512 1024}; do for ts in ${BSWEEP_TASK_MIB:-16 64}; do for cc in ${BSWEEP_CONC:-8 32}; do sudo bash hack/drop-caches.sh >/dev/null; /opt/adit-venv/bin/python bench/paths/lib/gpuload.py --mode remotefile --plan /tmp/t2-64-plan.jsonl --threads \$th --task-size-mib \$ts --concurrency \$cc --devices $DEVS --buffer-gib $BUF_GIB --region $REGION --runs 1 --meta path=B --meta workload=T2-64 --meta cold=1 --meta client_instance=p5en.48xlarge --out /tmp/g2-bsweep.csv 2>&1 | tail -1 | cut -d, -f13-15,23-24; done; done; done"
+    client_run bsweep "PLAN=/tmp/t2-64-plan.jsonl DEVICES=$DEVS BUF_GIB=$BUF_GIB THREADS=\"${BSWEEP_THREADS:-128 512 1024}\" TASK_MIB=\"${BSWEEP_TASK_MIB:-16 64}\" CONC=\"${BSWEEP_CONC:-8 32}\" OUT=/tmp/g2-bsweep.csv bash bench/paths/B/sweep.sh T2-64"
 fi
 
 if want ceiling; then
