@@ -77,8 +77,10 @@ start_proxies() {
 
 client_run() {
     # Long work runs under bgrun on the client (spawn connect block-buffers); poll its output.
+    # BUCKET and REGION travel with the command: the on-box runners region-check and read them
+    # (G2 #48 ran its on-box checks against the default bucket because they did not).
     local name=$1 cmd=$2
-    on "$CLIENT" "cd $REPO && ulimit -n \$(ulimit -Hn) && bgrun -o /tmp/g2-$name.out bash -c '$cmd; echo EXIT=\$?'" >/dev/null
+    on "$CLIENT" "cd $REPO && ulimit -n \$(ulimit -Hn) && bgrun -o /tmp/g2-$name.out bash -c 'BUCKET=$BUCKET REGION=$REGION $cmd; echo EXIT=\$?'" >/dev/null
     local t0=$SECONDS
     while :; do
         sleep 30
