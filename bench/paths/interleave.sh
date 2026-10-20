@@ -38,15 +38,17 @@ n=${#ARMS[@]}
 # the client's EFA hw_counters per device, before and after each E arm, under ${OUT%.csv}-snap/.
 SNAP=${OUT%.csv}-snap
 snap() {
-    local tag=$1; shift
+    # Every loop variable is local: bash scoping is dynamic, and arm()'s cycle counter is `c`
+    # (a global `c` here once redirected each arm's stderr into a sysfs path, skipping the arm).
+    local tag=$1 p d f i=0
+    shift
     mkdir -p "$SNAP/$tag"
-    local i=0
     for p in "$@"; do
         curl -s -m 10 "$p/metrics" >"$SNAP/$tag/proxy-$i.txt"
         i=$((i + 1))
     done
     for d in /sys/class/infiniband/*; do
-        for c in "$d"/ports/1/hw_counters/*; do printf '%s %s %s\n' "$(basename "$d")" "$(basename "$c")" "$(cat "$c")"; done
+        for f in "$d"/ports/1/hw_counters/*; do printf '%s %s %s\n' "$(basename "$d")" "$(basename "$f")" "$(cat "$f")"; done
     done >"$SNAP/$tag/client-efa.txt"
 }
 arm() {
