@@ -10,6 +10,7 @@
 #   start     start adit-proxy on every proxy (PROXY_ARGS) and read its configuration back
 #   plans     presign T2, T2-64 (its first 64 objects) and T1 on the client
 #   confirm50 E<N> on T2-64 unpinned vs pinned, counting NIXL duplicate-fragment warnings (#50)
+#   repro51   #51 client-abort reproduction: modes x runs on T2-64 (bench/paths/repro51.sh)
 #   ladder    proxy ladder: ARMS (E8 E4 E2 E1) interleaved over CYCLES on T2, all GPUs
 #   sweep     at E<N>: chunk 4/16 MiB and slots SWEEP_SLOTS, one T2 read each (restarts the proxies)
 #   t1        T1 at E<N>, striped and spread over all GPUs, 3 runs
@@ -143,6 +144,15 @@ step_confirm50() {
     # received" warnings and partial objects only in the unpinned arm.
     log "confirm50: E$N on T2-64, unpinned vs pinned"
     client_run confirm50 "PLAN=/tmp/t2-64-plan.jsonl PROXIES=$URLS DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY OUT=/tmp/g2-confirm50.csv bash bench/paths/confirm50.sh T2-64"
+}
+
+step_repro51() {
+    # #51 reproduction: repeated T2-64 reads per mode (single agent / agent per GPU / per GPU with
+    # the CUDA address workaround off), counting client aborts. R51_RUNS, R51_MODES override.
+    log "repro51: ${R51_MODES:-single pergpu pergpu-nowa} x ${R51_RUNS:-10} on T2-64"
+    client_run repro51 "PLAN=/tmp/t2-64-plan.jsonl PROXIES=$URLS DEVICES=$DEVS BUF_GIB=${R51_BUF_GIB:-20} E_CONCURRENCY=$E_CONCURRENCY RUNS=${R51_RUNS:-10} MODES=\"${R51_MODES:-single pergpu pergpu-nowa}\" OUT=/tmp/g2-repro51.csv bash bench/paths/repro51.sh T2-64"
+    on "$CLIENT" "cat /tmp/g2-repro51-r51/summary.txt" >"$OUT/repro51-summary.txt"
+    on "$CLIENT" "cd /tmp && tar czf /tmp/repro51.tgz g2-repro51.csv g2-repro51-r51 && aws s3 cp --quiet /tmp/repro51.tgz s3://$BUCKET/adit/g2/$(basename "$OUT")/repro51.tgz --region $REGION && echo pushed"
 }
 
 step_ladder() {
