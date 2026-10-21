@@ -5,7 +5,8 @@
 # multi-GPU client (p5en.48xlarge) and N proxies (c8gn.48xlarge). Steps, in order (STEPS to pick):
 #
 #   refresh   check out ADIT_REF and rebuild adit on every box (hack/install.sh, in parallel)
-#   health    hack/health.sh per proxy against the client, ALL_RAILS=1 (both proxy EFA devices)
+#   health    hack/health.sh per proxy against the client, ALL_RAILS=1: STOPS adit-proxy and probes the
+#             pair with separate probe processes (not the measured proxies); run start after it
 #   start     start adit-proxy on every proxy (PROXY_ARGS) and read its configuration back
 #   plans     presign T2, T2-64 (its first 64 objects) and T1 on the client
 #   confirm50 E<N> on T2-64 unpinned vs pinned, counting NIXL duplicate-fragment warnings (#50)
@@ -43,7 +44,6 @@ on() { local box=$1; shift; timeout "${ON_TIMEOUT:-900}" "$SPAWN" connect "$box"
 log() { echo "[$(date -u +%FT%TZ)] $*" | tee -a "$OUT/run.log"; }
 push() { AWS_PROFILE=${AWS_PROFILE-aws} aws s3 cp --recursive --quiet "$OUT" "s3://$BUCKET/adit/g2/$(basename "$OUT")/" --region "$REGION"; }
 trap push EXIT
-want() { [[ " $STEPS " == *" $1 "* ]]; }
 
 # Boxes and private addresses from the fleet.
 status=$(go run ./cmd/aditctl fleet status --name "$FLEET" 2>/dev/null)
@@ -98,7 +98,7 @@ client_run() {
     push
 }
 
-if want refresh; then
+step_refresh() {
     log "refresh: install.sh on every box at $ADIT_REF"
     ON_TIMEOUT=2400 on "$CLIENT" "cd $REPO && git fetch -q origin && git checkout -q $ADIT_REF && git reset -q --hard origin/$ADIT_REF && sudo ADIT_REF=$ADIT_REF bash hack/install.sh client 2>&1 | tail -15" >"$OUT/refresh-client.txt" &
     for p in "${PROXIES[@]}"; do
@@ -111,9 +111,9 @@ if want refresh; then
     grep -L 'install complete' "$OUT"/refresh-*.txt | grep -q . && { log "refresh failed on some box; stopping"; exit 1; }
     on "$CLIENT" "ls /sys/class/infiniband | wc -l; cat /var/lib/adit/versions" | tee "$OUT/client-versions.txt"
     push
-fi
+}
 
-if want health; then
+step_health() {
     for k in "${!PROXIES[@]}"; do
         on "${PROXIES[$k]}" "pkill -x adit-proxy; ls /sys/class/infiniband | paste -sd' '" | sed "s/^/${PROXIES[$k]} efa: /" | tee -a "$OUT/run.log"
         if ! ALL_RAILS=${ALL_RAILS-1} bash "$(dirname "$0")/health.sh" "$CLIENT" "${PROXIES[$k]}" "$CIP" "${MIN_GBPS:-180}" | tee -a "$OUT/health.txt" | grep -q 'HEALTH OK'; then
@@ -123,34 +123,34 @@ if want health; then
     done
     grep 'HEALTH' "$OUT/health.txt" | tee -a "$OUT/run.log"
     push
-fi
+}
 
-if want start; then
+step_start() {
     start_proxies "$PROXY_ARGS" base
-fi
+}
 
-if want plans; then
+step_plans() {
     on "$CLIENT" "command -v aditctl >/dev/null || (aws s3 cp --only-show-errors s3://$BUCKET/adit/bin/aditctl-linux-amd64 /tmp/aditctl && sudo install /tmp/aditctl /usr/local/bin/aditctl)
         for w in t1 t2; do aws s3 cp --only-show-errors s3://$BUCKET/adit/manifests/\$w.jsonl /tmp/\$w.jsonl && aditctl presign --region $REGION --manifest /tmp/\$w.jsonl --out /tmp/\$w-plan.jsonl --ttl 8h; done
         head -64 /tmp/t2-plan.jsonl >/tmp/t2-64-plan.jsonl; wc -l /tmp/t1-plan.jsonl /tmp/t2-plan.jsonl /tmp/t2-64-plan.jsonl" | tee -a "$OUT/run.log"
-fi
+}
 
 common="CYCLES=$CYCLES DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY"
 
-if want confirm50; then
+step_confirm50() {
     # #50 mechanism check: the same E8 read of T2-64 unpinned (8 proxies may write into one agent)
     # and pinned (one proxy per agent). The NIXL collision theory predicts "Duplicate fragment
     # received" warnings and partial objects only in the unpinned arm.
     log "confirm50: E$N on T2-64, unpinned vs pinned"
     client_run confirm50 "PLAN=/tmp/t2-64-plan.jsonl PROXIES=$URLS DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY OUT=/tmp/g2-confirm50.csv bash bench/paths/confirm50.sh T2-64"
-fi
+}
 
-if want ladder; then
+step_ladder() {
     log "ladder: $ARMS x $CYCLES cycles on T2"
     client_run ladder "PLAN=/tmp/t2-plan.jsonl PROXIES=$URLS ARMS=\"$ARMS\" STRIPE=0 E_ARGS=\"$E_ARGS\" $common OUT=/tmp/g2-ladder.csv bash bench/paths/interleave.sh T2"
-fi
+}
 
-if want sweep; then
+step_sweep() {
     for c in 4 16; do
         s=$(( 2048 * 8 / c ))
         log "sweep: chunk ${c} MiB, slots $s (in-flight bytes held at 16 GiB per proxy)"
@@ -163,26 +163,26 @@ if want sweep; then
         client_run "sweep-s$s" "PLAN=/tmp/t2-plan.jsonl PROXIES=$URLS ARMS=E$N CYCLES=1 STRIPE=0 E_ARGS=\"$E_ARGS\" DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY OUT=/tmp/g2-sweep.csv bash bench/paths/interleave.sh T2"
     done
     start_proxies "$PROXY_ARGS" base
-fi
+}
 
-if want t1; then
+step_t1() {
     log "t1: E$N, spread over all GPUs, each GPU's segment from its pinned proxy"
     client_run t1 "PLAN=/tmp/t1-plan.jsonl PROXIES=$URLS ARMS=E$N CYCLES=3 STRIPE=1 E_ARGS=\"$E_ARGS --spread\" DEVICES=$DEVS BUF_GIB=16 E_CONCURRENCY=$(( $(tr -cd , <<<"$DEVS" | wc -c) + 1 )) OUT=/tmp/g2-t1.csv bash bench/paths/interleave.sh T1"
-fi
+}
 
-if want bsweep; then
+step_bsweep() {
     # Path B at its best on this client before H-ceiling (law 3): threads x task size x objects in
     # flight on T2-64, 8 GPUs, one read each, cold. BSWEEP_* override the grid.
     log "bsweep: KvikIO RemoteFile grid on T2-64"
     client_run bsweep "PLAN=/tmp/t2-64-plan.jsonl DEVICES=$DEVS BUF_GIB=$BUF_GIB THREADS=\"${BSWEEP_THREADS:-128 512 1024}\" TASK_MIB=\"${BSWEEP_TASK_MIB:-16 64}\" CONC=\"${BSWEEP_CONC:-8 32}\" OUT=/tmp/g2-bsweep.csv bash bench/paths/B/sweep.sh T2-64"
-fi
+}
 
-if want ceiling; then
-    log "ceiling: B512 B1024 E$N on T2-64, all GPUs"
+step_ceiling() {
+    log "ceiling: ${CEIL_ARMS:-B512 B1024 E$N} on T2-64, all GPUs"
     client_run ceiling "PLAN=/tmp/t2-64-plan.jsonl PROXIES=$URLS ARMS=\"${CEIL_ARMS:-B512 B1024 E$N}\" STRIPE=0 E_ARGS=\"$E_ARGS\" B_CONCURRENCY=${B_CONCURRENCY:-16} B_TASK_MIB=${B_TASK_MIB:-64} $common OUT=/tmp/g2-ceiling.csv bash bench/paths/interleave.sh T2-64"
-fi
+}
 
-if want collect; then
+step_collect() {
     for f in confirm50 ladder sweep t1 ceiling bsweep; do
         on "$CLIENT" "test -f /tmp/g2-$f.csv && cat /tmp/g2-$f.csv" >"$OUT/g2-$f.csv"
         on "$CLIENT" "test -f /tmp/g2-$f.order && cat /tmp/g2-$f.order" >"$OUT/g2-$f.order"
@@ -194,5 +194,11 @@ if want collect; then
     on "$CLIENT" "for d in /tmp/g2-*-snap; do [ -d \$d ] && aws s3 cp --recursive --quiet \$d s3://$BUCKET/adit/g2/$(basename "$OUT")/\$(basename \$d)/ --region $REGION; done; ls -d /tmp/g2-*-snap 2>/dev/null | wc -l" | sed 's/^/snapshot dirs pushed: /' | tee -a "$OUT/run.log"
     on "$CLIENT" "cat /var/lib/adit/versions; nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv" >"$OUT/client-versions.txt"
     ls -la "$OUT" | tee -a "$OUT/run.log"
-fi
+}
+# Steps run in the order STEPS lists them (G2 rerun: running them in file order put the closing
+# health step, which stops every adit-proxy, before t1 and ceiling, leaving those arms no proxies).
+for s in $STEPS; do
+    declare -F "step_$s" >/dev/null || { log "unknown step $s"; exit 2; }
+    "step_$s"
+done
 log "done: $OUT"
