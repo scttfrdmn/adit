@@ -3,6 +3,7 @@
 #
 # G2 placement attempt (#48): try to land the GPU client plus proxy-0 of fleet `g2`, stopping at
 # the first that lands; prints PLACED <region> <type> or NONE. Attempts that fail cost nothing.
+# Proxies are on-demand (G2: spot proxies were reclaimed within minutes).
 # Order: p5en then p5 in us-east-1 and us-east-2, then p5en in the other regions Scott approved
 # (2026-10-20), cheapest first; spot before on-demand within each. Every region has a bench bucket
 # (hack/bench-bucket.sh) and copies of the client and proxy AMIs. Proxies 1.. are added after the
@@ -48,9 +49,18 @@ for tr in "${TRIES[@]}"; do
     c=${c%,}
     # Cost limits: 2 h at the on-demand rate plus headroom (spored's hard kill; size for the market
     # the box may fall back to).
+    # Elastic IPs: every multi-interface box needs one, and the region's limit is shared with
+    # other work. All proxies get both rails only if the client plus 8 proxies fit; otherwise all
+    # get one (no Elastic IP), so the ladder never mixes rail counts (G2 #48 review).
+    lim=$(aws ec2 describe-account-attributes --region "$r" --attribute-names vpc-max-elastic-ips \
+        --query 'AccountAttributes[0].AttributeValues[0].AttributeValue' --output text 2>/dev/null)
+    used=$(aws ec2 describe-addresses --region "$r" --query 'length(Addresses)' --output text 2>/dev/null)
+    pefa=0
+    if (( ${lim:-0} - ${used:-0} < 9 )); then pefa=1; fi
+    if (( ${lim:-0} - ${used:-0} < 1 )); then echo "[$(date -u +%TZ)] $r: no free Elastic IP for the client; skipping" | tee -a "$LOG"; continue; fi
     ccap=$(awk -v p="$cprice" 'BEGIN{printf "%d", p*2+5}')
     pcap=$(awk -v p="$pprice" 'BEGIN{printf "%d", p*2+3}')
-    echo "[$(date -u +%TZ)] try $t in $r (caps client \$$ccap proxy \$$pcap)" | tee -a "$LOG"
+    echo "[$(date -u +%TZ)] try $t in $r (caps client \$$ccap proxy \$$pcap; Elastic IPs ${used:-?}/${lim:-?}, proxy EFA interfaces ${pefa/0/all})" | tee -a "$LOG"
     # Proxy first in AZs where the client lands but proxies have not (PROXY_FIRST_AZS): a proxy
     # without capacity fails for free, a client without a proxy bills ~$40/hr until retired.
     pf=""
@@ -58,7 +68,7 @@ for tr in "${TRIES[@]}"; do
     if [[ -n $pf ]]; then
         for z in $pf; do
             pout=$(timeout 1500 go run ./cmd/aditctl fleet up --name g2 --clients 0 --proxies 1 --candidates "$z:spot,$z" \
-                --proxy-type c8gn.48xlarge --proxy-spot --ttl 2h --client-cost-limit 1 --proxy-cost-limit "$pcap" \
+                --proxy-type c8gn.48xlarge --proxy-efa-interfaces "$pefa" --ttl 2h --client-cost-limit 1 --proxy-cost-limit "$pcap" \
                 --proxy-ami "$pami" --bucket "$bkt" --profile "${AWS_PROFILE:-aws}" 2>&1)
             echo "$pout" >>"$LOG"
             if grep -q '^adit-g2-proxy-0' <<<"$pout"; then
@@ -68,7 +78,7 @@ for tr in "${TRIES[@]}"; do
                     --bucket "$bkt" --profile "${AWS_PROFILE:-aws}" 2>&1)
                 echo "$cout" >>"$LOG"
                 if grep -q '^adit-g2-client-0' <<<"$cout"; then
-                    echo "PLACED $r $t bucket=$bkt (proxy first)"
+                    echo "PLACED $r $t bucket=$bkt proxy_efa=$pefa (proxy first)"
                     exit 0
                 fi
                 echo "[$(date -u +%TZ)] no $t in $z: retiring proxy-0" | tee -a "$LOG"
@@ -83,7 +93,7 @@ for tr in "${TRIES[@]}"; do
         c=${c%,}
     fi
     out=$(timeout 2400 go run ./cmd/aditctl fleet up --name g2 --candidates "$c" --client-type "$t" \
-        --proxy-type c8gn.48xlarge --proxies 1 --proxy-spot --ttl 2h --client-cost-limit "$ccap" \
+        --proxy-type c8gn.48xlarge --proxy-efa-interfaces "$pefa" --proxies 1 --ttl 2h --client-cost-limit "$ccap" \
         --proxy-cost-limit "$pcap" --client-ami "$cami" --proxy-ami "$pami" --bucket "$bkt" \
         --profile "${AWS_PROFILE:-aws}" 2>&1)
     rc=$?
@@ -91,7 +101,7 @@ for tr in "${TRIES[@]}"; do
     grep -E '^adit-g2-' <<<"$out" | tee -a "$LOG"
     if grep -q '^adit-g2-client-0' <<<"$out"; then
         if grep -q '^adit-g2-proxy-0' <<<"$out"; then
-            echo "PLACED $r $t bucket=$bkt"
+            echo "PLACED $r $t bucket=$bkt proxy_efa=$pefa"
             exit 0
         fi
         # A client with no proxy beside it bills $40-90/hr for nothing (ap-northeast-1a,

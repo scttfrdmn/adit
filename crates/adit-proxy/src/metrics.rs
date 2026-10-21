@@ -103,6 +103,18 @@ impl Metrics {
         self.h_fetch.render(&mut o, "chunk_fetch", "Per chunk: ranged GET, issue to last body byte.");
         self.h_write_wait.render(&mut o, "chunk_write_wait", "Per chunk: time waiting for a write permit.");
         self.h_write.render(&mut o, "chunk_write", "Per chunk: RDMA write, post to completion.");
+        // The proxy's own EFA device counters (errors, retransmits, RDMA bytes), so a client-side
+        // runner can snapshot them per arm with the rest of /metrics (#51).
+        let efa = efa_counters();
+        if !efa.is_empty() {
+            let _ = writeln!(
+                o,
+                "# HELP adit_proxy_efa EFA hw_counters per device (port 1).\n# TYPE adit_proxy_efa counter"
+            );
+            for (dev, name, v) in efa {
+                let _ = writeln!(o, "adit_proxy_efa{{dev=\"{dev}\",counter=\"{name}\"}} {v}");
+            }
+        }
         if let Some(cpu) = process_cpu_seconds() {
             let _ = writeln!(o, "# TYPE adit_proxy_cpu_seconds_total counter\nadit_proxy_cpu_seconds_total {cpu}");
         }
@@ -121,4 +133,22 @@ impl Metrics {
         );
         o
     }
+}
+
+/// `(device, counter, value)` for every readable `hw_counters` file under
+/// `/sys/class/infiniband/<dev>/ports/1`; empty off EFA hosts.
+fn efa_counters() -> Vec<(String, String, u64)> {
+    let mut out = vec![];
+    let Ok(devs) = std::fs::read_dir("/sys/class/infiniband") else { return out };
+    for d in devs.flatten() {
+        let dev = d.file_name().to_string_lossy().into_owned();
+        let Ok(cs) = std::fs::read_dir(d.path().join("ports/1/hw_counters")) else { continue };
+        for c in cs.flatten() {
+            if let Some(v) = std::fs::read_to_string(c.path()).ok().and_then(|t| t.trim().parse::<u64>().ok()) {
+                out.push((dev.clone(), c.file_name().to_string_lossy().into_owned(), v));
+            }
+        }
+    }
+    out.sort();
+    out
 }

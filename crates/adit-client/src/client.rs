@@ -37,6 +37,11 @@ pub struct Config {
     pub pump_idle: Duration,
 }
 
+/// Which proxy serves stripe `i` of request `req` into destination `dest`, of `n` proxies.
+fn route(pin: bool, dest: usize, req: u64, i: usize, n: usize) -> usize {
+    if pin { dest % n } else { (req as usize + i) % n }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
     pub bytes: u64,
@@ -71,6 +76,8 @@ pub struct Client {
     dests: Vec<Dest>,
     /// Agent name per destination; empty means `cfg.agent` for all.
     agents: Vec<String>,
+    /// Destination `d` is served only by proxy `d mod N` (see [`Client::pin_dest_proxy`]).
+    pin_dest_proxy: bool,
     tracker: Arc<Tracker>,
     next_req: AtomicU64,
     pump: tokio::task::JoinHandle<()>,
@@ -117,11 +124,29 @@ impl Client {
             http,
             dests,
             agents: vec![],
+            pin_dest_proxy: false,
             tracker,
             next_req: AtomicU64::new(seed),
             pump,
             extra_pumps: vec![],
         })
+    }
+
+    /// Stop the notification pumps and wait until they have exited, so every reference they hold
+    /// to the notification sources (the NIXL agents) is gone. Call it before freeing the memory
+    /// those agents registered: `Drop` only aborts the pumps, and an aborted tokio task's future,
+    /// with its agent reference, can outlive `main`'s locals, so the GPU buffers would be freed
+    /// while still registered with the NIC (EFA "local memory registration is invalid", abort at
+    /// exit; G2 rerun, #51).
+    pub async fn shutdown(mut self) {
+        let mut all = vec![std::mem::replace(&mut self.pump, tokio::spawn(async {}))];
+        all.append(&mut self.extra_pumps);
+        for p in &all {
+            p.abort();
+        }
+        for p in all {
+            let _ = p.await;
+        }
     }
 
     pub fn tracker(&self) -> &Tracker {
@@ -157,6 +182,17 @@ impl Client {
             c.extra_pumps.push(c.tracker.pump(src, c.cfg.pump_idle));
         }
         Ok(c)
+    }
+
+    /// Serve destination `d` only from proxy `d mod N`, and never stripe one request across
+    /// proxies, so each target agent hears from exactly one initiator (#50/#51). NIXL 1.2.0's
+    /// LIBFABRIC target matches notifications to writes by a 16-bit transfer id alone, and every
+    /// initiator numbers its transfers from 1: two proxies writing into one agent collide, the
+    /// second notification is dropped as a "duplicate", and the leaked placeholder entries grow the
+    /// map the target's progress thread scans on every completion.
+    pub fn pin_dest_proxy(mut self) -> Self {
+        self.pin_dest_proxy = true;
+        self
     }
 
     fn agent_for(&self, dest: usize) -> &str {
@@ -258,9 +294,13 @@ impl Client {
         self.tracker.open(req);
 
         let n = self.cfg.proxies.len();
-        let stripes = if self.cfg.stripe { stripe(range.clone(), n, self.cfg.chunk) } else { vec![range.clone()] };
+        let stripes = if self.cfg.stripe && !self.pin_dest_proxy {
+            stripe(range.clone(), n, self.cfg.chunk)
+        } else {
+            vec![range.clone()]
+        };
         let futs = stripes.iter().enumerate().map(|(i, s)| {
-            let proxy = &self.cfg.proxies[(req as usize + i) % n];
+            let proxy = &self.cfg.proxies[route(self.pin_dest_proxy, dest, req, i, n)];
             self.one(d, self.agent_for(dest), proxy, path, url, s.clone(), dest_offset + (s.start - range.start), req)
         });
         let answers = futures::future::join_all(futs).await;
@@ -291,5 +331,22 @@ impl Client {
             missing: cov.missing(within),
             proxy_errors,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::route;
+
+    #[test]
+    fn pinned_destinations_use_one_proxy_each() {
+        for dest in 0..8 {
+            let seen: std::collections::BTreeSet<usize> =
+                (0..50u64).flat_map(|req| (0..4).map(move |i| route(true, dest, req, i, 4))).collect();
+            assert_eq!(seen.into_iter().collect::<Vec<_>>(), vec![dest % 4]);
+        }
+        // Unpinned: requests rotate over the proxies.
+        let seen: std::collections::BTreeSet<usize> = (0..8u64).map(|req| route(false, 0, req, 0, 4)).collect();
+        assert_eq!(seen.len(), 4);
     }
 }

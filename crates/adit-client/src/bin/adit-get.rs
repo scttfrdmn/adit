@@ -51,6 +51,10 @@ struct Args {
     /// instead of one agent holding every buffer (#48: that lost notifications under concurrency).
     #[arg(long)]
     agent_per_gpu: bool,
+    /// With --agent-per-gpu: GPU g is served only by proxy g mod N and requests are not striped
+    /// across proxies, so each agent hears from one initiator (#50/#51).
+    #[arg(long)]
+    pin_gpu_proxy: bool,
     /// GPU destination buffer per GPU, GiB.
     #[arg(long, default_value_t = 16)]
     buffer_gib: u64,
@@ -205,12 +209,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         timeout: Duration::from_secs(3600),
         pump_idle: Duration::from_micros(a.pump_idle_us),
     };
+    if a.pin_gpu_proxy && !a.agent_per_gpu {
+        return Err("--pin-gpu-proxy needs --agent-per-gpu".into());
+    }
     let client = if a.agent_per_gpu {
         let srcs = agents
             .iter()
             .map(|g| (g.name().to_string(), g.clone() as std::sync::Arc<dyn adit_client::completion::NotifSource>))
             .collect();
-        let c = Client::with_agents(cfg, dests.clone(), srcs)?;
+        let mut c = Client::with_agents(cfg, dests.clone(), srcs)?;
+        if a.pin_gpu_proxy {
+            c = c.pin_dest_proxy();
+        }
         c.register_each(&mds).await?;
         c
     } else {
@@ -244,6 +254,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for run in 1..=a.runs {
         let (mut wall, mut bytes, mut s3_requests, mut objects) = (Duration::ZERO, 0u64, 0u64, 0usize);
         let (mut host_cpu, mut proc_cpu, mut efa_rx) = (0f64, 0f64, 0u64);
+        let mut host_ticks = 0f64;
         let (mut mem_rd, mut mem_wr, mut mem_ok) = (0u64, 0u64, true);
         let mut placed: Option<u64> = Some(0);
         let (mut bad, mut partial, mut notes) = (0usize, 0usize, Vec::<String>::new());
@@ -269,6 +280,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             wall += t0.elapsed();
             let m = win.stop();
             host_cpu += m.host_cpu_s.unwrap_or(f64::NAN);
+            host_ticks += m.host_cpu_ticks_s.unwrap_or(f64::NAN);
             proc_cpu += m.proc_cpu_s.unwrap_or(f64::NAN);
             efa_rx += m.efa_rx_bytes.unwrap_or(0);
             placed = placed.zip(m.nic_placed_bytes).map(|(a, b)| a + b);
@@ -343,6 +355,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let placement = adit_client::counters::placement(placed, bytes);
         notes
             .push(format!("placement={placement} nic_placed_bytes={}", placed.map_or("n/a".into(), |p| p.to_string())));
+        notes.push(format!("host_cpu_ticks_s={host_ticks:.2}"));
         if !rails.is_empty() {
             notes.push(format!("rails={}", adit_client::counters::rails_note(&rails)));
         }
@@ -393,9 +406,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         row.set(
             "config",
             format!(
-                "backend={};agent_per_gpu={};chunk={chunk};stripe={};concurrency={};buffer_gib={};waves={};gpu={};devices={};spread={};pump_idle_us={};nixl_progress_delay_us={}",
+                "backend={};agent_per_gpu={};pin_gpu_proxy={};chunk={chunk};stripe={};concurrency={};buffer_gib={};waves={};gpu={};devices={};spread={};pump_idle_us={};nixl_progress_delay_us={}",
                 a.backend,
                 a.agent_per_gpu,
+                a.pin_gpu_proxy,
                 a.stripe,
                 a.concurrency,
                 a.buffer_gib,
@@ -413,6 +427,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             writeln!(f, "{}", row.line())?;
         }
     }
+    // Teardown in dependency order (#51): stop the notification pumps and wait for them, release
+    // every agent (deregistering its memory), and only then free the GPU buffers.
+    client.shutdown().await;
+    drop(agent);
+    drop(agents);
+    drop(bufs);
     if any_bad {
         return Err("oracle mismatch or partial transfer: see notes".into());
     }
