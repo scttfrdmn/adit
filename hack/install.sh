@@ -16,7 +16,11 @@ echo "opts=$-"
 
 ROLE=${1-}
 [[ $ROLE == proxy || $ROLE == client ]] || { echo "usage: $0 proxy|client" >&2; exit 2; }
-NIXL_TAG=${NIXL_TAG:-v1.2.0}
+# NIXL is pinned to an upstream main commit (Scott, 2026-10-23): it has the LIBFABRIC fixes adit
+# needs and no release has them yet: sender-keyed notifications (ai-dynamo/nixl#2294, adit #50) and
+# the endpoint/CQ lock (#2308, adit #51). Move to the first release containing both.
+NIXL_REF=${NIXL_REF:-a9f1f7a76f46f0ee78ec7448936d48ca52073fe3}
+NIXL_TAG=$NIXL_REF
 # v0.15.4 (latest tag) uses GPR_ASSERT, which gRPC 1.73 removed; NIXL builds master. Pinned here.
 ETCD_CPP_REF=${ETCD_CPP_REF:-7c6e714f188f9576e25e0350cac4181139eec23e}
 # NIXL needs absl/log, newer than Ubuntu 24.04's Abseil; gRPC (for etcd-cpp, for nixlbench) must
@@ -123,9 +127,11 @@ if ! done_ etcdcpp; then
     mark etcdcpp
 fi
 
-if ! done_ nixl; then
-    cd "$SRC" && rm -rf nixl && git clone -q --depth 1 -b "$NIXL_TAG" https://github.com/ai-dynamo/nixl.git || fail nixl clone
-    cd nixl
+# The marker names the ref, so a box (or AMI) built at another NIXL rebuilds.
+if ! done_ "nixl-$NIXL_REF"; then
+    cd "$SRC" && rm -rf nixl && mkdir nixl && cd nixl || fail nixl dir
+    git init -q && git remote add origin https://github.com/ai-dynamo/nixl.git &&
+        git fetch -q --depth 1 origin "$NIXL_REF" && git checkout -q FETCH_HEAD || fail nixl fetch
     opts=(-Dlibfabric_path=/opt/amazon/efa -Detcd_inc_path=/usr/local/include -Detcd_lib_path=/usr/local/lib
         -Dbuild_tests=false -Dbuild_examples=false --buildtype=release --prefix="$NIXL_PREFIX")
     [[ -n $CUDA ]] && opts+=(-Dcudapath_inc="$CUDA/include" -Dcudapath_lib="$CUDA/lib64")
@@ -141,7 +147,7 @@ if ! done_ nixl; then
     meson setup build "${bopts[@]}" || fail nixlbench meson
     ninja -C build install || fail nixlbench build
     ln -sf "$NIXL_PREFIX/bin/nixlbench" /usr/local/bin/nixlbench
-    mark nixl
+    mark "nixl-$NIXL_REF"
 fi
 plugins=$(find "$NIXL_PREFIX" -name 'libplugin_LIBFABRIC*.so' | head -1)
 [[ -n $plugins ]] || fail "NIXL LIBFABRIC plugin not built"

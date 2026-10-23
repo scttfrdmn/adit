@@ -35,7 +35,8 @@ with GDS — and by how much on real workloads? Build what the gates need and no
 
 ## Fixed decisions
 
-- **Languages.** Rust (current stable) for `crates/`: `nixl-sys =1.2.0`, `mountpoint-s3-crt` for
+- **Languages.** Rust (current stable) for `crates/`: `nixl-sys` and NIXL pinned to upstream main
+  `a9f1f7a7` (Scott, 2026-10-23: has ai-dynamo/nixl#2294 and #2308, unreleased) until a release has both, `mountpoint-s3-crt` for
   the CRT S3 client, PyO3 for Python. Go (current stable, no cgo) for `cmd/aditctl` and
   `internal/`. Third-party tools on paths A–D are driven by scripts in `bench/paths/`.
 - **Versioning.** SemVer 2.0.0. No tags, no releases, no version numbers chosen by Claude Code.

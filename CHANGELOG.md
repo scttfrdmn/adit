@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **NIXL and `nixl-sys` are pinned to upstream main `a9f1f7a7`** (Scott, 2026-10-23); they were v1.2.0. That commit has sender-keyed LIBFABRIC notifications (ai-dynamo/nixl#2294, the fix for #50) and the endpoint/CQ lock (#2308, the likely fix for #51); no release has either yet. `hack/install.sh` builds that commit and rebuilds when the ref changes.
+
 ### Added
 
 - **#51/#50 small reproduction:** `bench/paths/repro51.sh`, the `hack/g2.sh` `repro51` step and `hack/r51-place.sh`. The results are in `bench/results/paths-r51.csv`. One NIXL agent shared by two proxies lost notifications in 9 of 10 runs, with NIXL's "Duplicate fragment received" warnings. One agent per GPU, each pinned to one proxy, lost none in 20 runs. The #51 abort did not reproduce on one rail (0 of 30).
