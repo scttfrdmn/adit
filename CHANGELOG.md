@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`hack/g2.sh` `csweep` step (#53)** and a wider path B grid (#54). **G2 run 3 results** are in `bench/results/paths-g2r3.csv`: p5en and 8 × c8gn.48xlarge (1 rail) on NIXL `a9f1f7a7`. All 45 rows have oracle ok, with 0 aborts.
 - **Multi-rail reproduction with a NIXL control** in `bench/results/paths-r51mr.csv`, run on p5.48xlarge with 32 EFA rails. On NIXL v1.2.0, one agent shared by 2 proxies failed 10 of 10 runs, with 6,839 duplicate-fragment warnings and 1 #51 abort (the EFA "Local memory registration … IOVA" error). On upstream main `a9f1f7a7` the same runs failed 0 of 10, with no warnings and no aborts. One agent per GPU was clean on both.
 - **#51/#50 small reproduction:** `bench/paths/repro51.sh`, the `hack/g2.sh` `repro51` step and `hack/r51-place.sh`. The results are in `bench/results/paths-r51.csv`. One NIXL agent shared by two proxies lost notifications in 9 of 10 runs, with NIXL's "Duplicate fragment received" warnings. One agent per GPU, each pinned to one proxy, lost none in 20 runs. The #51 abort did not reproduce on one rail (0 of 30).
 - **G2 rerun results** in `bench/results/paths-g2r.csv` (#48): p5.48xlarge client and 8 × c8gn.48xlarge proxies with one rail each in us-east-2. It covers the T2 proxy ladder, the path B tuning grid with its best configuration, the #50 probe, and the client EFA abort backtrace (#51).
