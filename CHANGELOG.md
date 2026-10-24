@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **G2 run 4 results (two-rail proxies)** in `bench/results/paths-g2r4.csv`: p5en with 7 × c8gn.48xlarge on both EFA rails, NIXL `a9f1f7a7`. `hack/g2-place.sh` gains `REGIONS` and `REQUIRE_ALL_RAILS`, and `hack/g2.sh` takes the proxy list from the fleet, so a proxy that never placed leaves no gap.
 - **`aditctl teardown` releases orphaned spawn Elastic IPs.** In each region it runs `spawn cleanup --elastic-ips` (spawn 0.142.0, spawn#1232), then verifies on EC2 that no unassociated spawn launch Elastic IP remains, failing otherwise. `--no-eip-cleanup` skips this.
 - **`hack/g2.sh` `csweep` step (#53)** and a wider path B grid (#54). **G2 run 3 results** are in `bench/results/paths-g2r3.csv`: p5en and 8 × c8gn.48xlarge (1 rail) on NIXL `a9f1f7a7`. All 45 rows have oracle ok, with 0 aborts.
 - **Multi-rail reproduction with a NIXL control** in `bench/results/paths-r51mr.csv`, run on p5.48xlarge with 32 EFA rails. On NIXL v1.2.0, one agent shared by 2 proxies failed 10 of 10 runs, with 6,839 duplicate-fragment warnings and 1 #51 abort (the EFA "Local memory registration … IOVA" error). On upstream main `a9f1f7a7` the same runs failed 0 of 10, with no warnings and no aborts. One agent per GPU was clean on both.
