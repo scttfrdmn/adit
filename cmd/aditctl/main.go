@@ -434,6 +434,7 @@ func cmdTeardown(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("teardown", flag.ExitOnError)
 	profile := fs.String("profile", os.Getenv("AWS_PROFILE"), "AWS profile")
 	regions := fs.String("regions", "us-east-1,us-east-2,us-west-2,us-west-1,eu-north-1,ap-south-1,ap-northeast-1,ap-northeast-2", "regions to check on EC2 directly")
+	noEIP := fs.Bool("no-eip-cleanup", false, "skip releasing orphaned spawn Elastic IPs (spawn cleanup --elastic-ips)")
 	_ = fs.Parse(args)
 	ls, err := fleet.List(ctx, envOr("ADIT_SPAWN", "spawn"), *profile, "")
 	if err != nil {
@@ -458,11 +459,27 @@ func cmdTeardown(ctx context.Context, args []string) error {
 			fmt.Printf("REMAINING (ec2 %s) %s\n", r, l)
 			n++
 		}
+		if *noEIP {
+			continue
+		}
+		// A spot reclaim leaves the launch Elastic IP of a multi-interface box allocated (spawn#1232):
+		// release orphans, then verify on EC2 that none remain.
+		if out, err := fleet.CleanupEIPs(ctx, envOr("ADIT_SPAWN", "spawn"), *profile, r); err != nil {
+			fmt.Printf("eip cleanup %s: %v: %s\n", r, err, out)
+		}
+		orphans, err := fleet.OrphanEIPs(ctx, ec2.NewFromConfig(cfg))
+		if err != nil {
+			return fmt.Errorf("%s addresses: %w", r, err)
+		}
+		for _, o := range orphans {
+			fmt.Printf("REMAINING (eip %s) %s\n", r, o)
+			n++
+		}
 	}
 	if n > 0 {
-		return fmt.Errorf("%d adit instance(s) remain", n)
+		return fmt.Errorf("%d adit instance(s) or orphaned Elastic IP(s) remain", n)
 	}
-	fmt.Printf("teardown verified: no adit instances in spawn list or EC2 (%s)\n", *regions)
+	fmt.Printf("teardown verified: no adit instances in spawn list or EC2, no orphaned spawn Elastic IPs (%s)\n", *regions)
 	return nil
 }
 
