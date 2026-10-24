@@ -70,7 +70,7 @@ for tr in "${TRIES[@]}"; do
     # Proxy first in AZs where the client lands but proxies have not (PROXY_FIRST_AZS): a proxy
     # without capacity fails for free, a client without a proxy bills ~$40/hr until retired.
     pf=""
-    for z in $azs; do [[ " ${PROXY_FIRST_AZS-ap-northeast-1a us-east-1f} " == *" $z "* ]] && pf="$pf $z"; done
+    for z in $azs; do [[ " ${PROXY_FIRST_AZS-ap-northeast-1a us-east-1f us-east-1c} " == *" $z "* ]] && pf="$pf $z"; done
     if [[ -n $pf ]]; then
         for z in $pf; do
             pout=$(timeout 1500 go run ./cmd/aditctl fleet up --name g2 --clients 0 --proxies 1 --candidates "$z:spot,$z" \
