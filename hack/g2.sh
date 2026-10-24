@@ -158,10 +158,11 @@ step_repro51() {
 
 step_csweep() {
     # #53: E<N> on T2 at several client concurrencies (objects in flight), CSWEEP_CYCLES cycles,
+    # one output (and per-arm snapshot directory) per level so levels do not overwrite each other,
     # rotated, same proxies (no restart). CSWEEP_CONC overrides the levels.
     for cc in ${CSWEEP_CONC:-128 256 512}; do
         log "csweep: E$N on T2 at concurrency $cc"
-        client_run "csweep-c$cc" "PLAN=/tmp/t2-plan.jsonl PROXIES=$URLS ARMS=E$N CYCLES=${CSWEEP_CYCLES:-2} STRIPE=0 E_ARGS=\"$E_ARGS\" DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$cc OUT=/tmp/g2-csweep.csv bash bench/paths/interleave.sh T2"
+        client_run "csweep-c$cc" "PLAN=/tmp/t2-plan.jsonl PROXIES=$URLS ARMS=E$N CYCLES=${CSWEEP_CYCLES:-2} STRIPE=0 E_ARGS=\"$E_ARGS\" DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$cc OUT=/tmp/g2-csweep-c$cc.csv bash bench/paths/interleave.sh T2"
     done
 }
 
@@ -203,7 +204,7 @@ step_ceiling() {
 }
 
 step_collect() {
-    for f in confirm50 ladder csweep sweep t1 ceiling bsweep; do
+    for f in confirm50 ladder csweep csweep-c128 csweep-c256 csweep-c512 sweep t1 ceiling bsweep; do
         on "$CLIENT" "test -f /tmp/g2-$f.csv && cat /tmp/g2-$f.csv" >"$OUT/g2-$f.csv"
         on "$CLIENT" "test -f /tmp/g2-$f.order && cat /tmp/g2-$f.order" >"$OUT/g2-$f.order"
     done
