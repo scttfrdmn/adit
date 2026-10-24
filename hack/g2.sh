@@ -12,6 +12,7 @@
 #   confirm50 E<N> on T2-64 unpinned vs pinned, counting NIXL duplicate-fragment warnings (#50)
 #   repro51   #51 client-abort reproduction: modes x runs on T2-64 (bench/paths/repro51.sh)
 #   csweep    #53: E<N> on T2 at client concurrency CSWEEP_CONC (128 256 512), CSWEEP_CYCLES each
+#   slotcmp   E<N> on T2 at SLOTCMP_SLOTS (2048 4096), alternated per cycle, proxies restarted per level
 #   ladder    proxy ladder: ARMS (E8 E4 E2 E1) interleaved over CYCLES on T2, all GPUs
 #   sweep     at E<N>: chunk 4/16 MiB and slots SWEEP_SLOTS, one T2 read each (restarts the proxies)
 #   t1        T1 at E<N>, striped and spread over all GPUs, 3 runs
@@ -179,6 +180,21 @@ step_csweep() {
     done
 }
 
+step_slotcmp() {
+    # Same-session slot attribution (#53): E<N> on T2 at each SLOTCMP_SLOTS level, alternating the
+    # level order per cycle (SLOTCMP_CYCLES), restarting the proxies with that pool each time. One
+    # output and snapshot directory per level. Leaves the proxies at the last level run.
+    local levels=(${SLOTCMP_SLOTS:-2048 4096}) c k s
+    for c in $(seq 1 "${SLOTCMP_CYCLES:-3}"); do
+        for k in "${!levels[@]}"; do
+            s=${levels[$(( (k + c - 1) % ${#levels[@]} ))]}
+            log "slotcmp: cycle $c, slots $s"
+            start_proxies "--chunk-mib 8 --slots $s --throughput-gbps 600" "s$s"
+            client_run "slotcmp-c$c-s$s" "PLAN=/tmp/t2-plan.jsonl PROXIES=$URLS ARMS=E$N CYCLES=1 STRIPE=0 E_ARGS=\"$E_ARGS\" DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY OUT=/tmp/g2-slotcmp-s$s.csv bash bench/paths/interleave.sh T2"
+        done
+    done
+}
+
 step_ladder() {
     log "ladder: $ARMS x $CYCLES cycles on T2"
     client_run ladder "PLAN=/tmp/t2-plan.jsonl PROXIES=$URLS ARMS=\"$ARMS\" STRIPE=0 E_ARGS=\"$E_ARGS\" $common OUT=/tmp/g2-ladder.csv bash bench/paths/interleave.sh T2"
@@ -217,7 +233,7 @@ step_ceiling() {
 }
 
 step_collect() {
-    for f in confirm50 ladder csweep csweep-c128 csweep-c256 csweep-c512 sweep t1 ceiling bsweep; do
+    for f in confirm50 ladder csweep csweep-c128 csweep-c256 csweep-c512 slotcmp-s2048 slotcmp-s4096 sweep t1 ceiling bsweep; do
         on "$CLIENT" "test -f /tmp/g2-$f.csv && cat /tmp/g2-$f.csv" >"$OUT/g2-$f.csv"
         on "$CLIENT" "test -f /tmp/g2-$f.order && cat /tmp/g2-$f.order" >"$OUT/g2-$f.order"
     done
