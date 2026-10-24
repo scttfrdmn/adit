@@ -12,7 +12,7 @@
 # Outside us-east-1, us-east-2 and us-west-2 the Standard quotas (640 on-demand + 640 spot vCPU)
 # hold at most 6 c8gn.48xlarge, so the ladder there tops out at 6 proxies.
 #
-#   AWS_PROFILE=aws ADIT_SPAWN=~/.xtmp/spawn-661-bin bash hack/g2-place.sh
+#   AWS_PROFILE=aws [REGIONS=us-east-1] bash hack/g2-place.sh
 set +e
 set -uo pipefail
 echo "opts=$-"
@@ -39,6 +39,8 @@ LOG=bench/runs/g2-place-$(date -u +%Y%m%dT%H%M%SZ).log
 mkdir -p bench/runs
 for tr in "${TRIES[@]}"; do
     read -r t r <<<"$tr"
+    # REGIONS (space-separated) limits the tries, e.g. REGIONS=us-east-1 for two-rail runs.
+    [[ -n ${REGIONS-} && " $REGIONS " != *" $r "* ]] && continue
     IFS='|' read -r azs cami pami bkt cprice pprice <<<"${REG[$r]}"
     if [[ $t == p5.48xlarge ]]; then
         cprice=55.04
