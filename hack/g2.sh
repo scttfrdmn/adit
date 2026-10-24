@@ -59,6 +59,8 @@ while read -r p; do
     PROXIES+=("$p")
     PIPS+=("$(ip_of "$p")")
 done < <(awk -v f="adit-$FLEET-proxy-" 'index($1,f)==1{print $1}' <<<"$status" | sort -t- -k4 -n)
+# --pin-gpu-proxy maps GPU g to proxy g mod N: unless N divides the GPU count, some proxies carry
+# twice the bytes and bound the arm (G2 run 4: E7 on 8 GPUs). Warn; E arms with such N are unbalanced.
 if (( ${#PROXIES[@]} != N )); then
     echo "fleet has ${#PROXIES[@]} proxies, not $N: using ${#PROXIES[@]}" | tee -a "$OUT/run.log"
     N=${#PROXIES[@]}
@@ -68,6 +70,11 @@ URLS=${URLS%,}
 log "fleet=$FLEET client=$CLIENT ($CIP) proxies=${PROXIES[*]} ips=${PIPS[*]} ref=$ADIT_REF"
 [[ -n $CIP && ${#PIPS[@]} -eq $N && ! " ${PIPS[*]} " == *"  "* ]] || { log "missing addresses; see $OUT/fleet.txt"; exit 1; }
 DEVS=$(on "$CLIENT" "nvidia-smi --query-gpu=index --format=csv,noheader | paste -sd, -" | tail -1)
+NGPU=$(tr ',' '\n' <<<"$DEVS" | grep -c .)
+for a in $ARMS; do
+    k=${a#E}
+    [[ $k =~ ^[0-9]+$ ]] && (( NGPU % k != 0 )) && log "WARNING: $a with $NGPU GPUs pinned is unbalanced (GPU g -> proxy g mod $k): $((NGPU % k)) proxies carry an extra GPU"
+done
 log "client GPUs: $DEVS"
 REPO=/opt/adit-src/adit
 
