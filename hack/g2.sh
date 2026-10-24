@@ -53,10 +53,16 @@ echo "$status" >"$OUT/fleet.txt"
 ip_of() { awk -v b="$1" '$1==b{for(i=1;i<=NF;i++) if($i ~ /^private=/){sub("private=","",$i); print $i}}' <<<"$status"; }
 CIP=$(ip_of "$CLIENT")
 PROXIES=() PIPS=()
-for i in $(seq 0 $((N - 1))); do
-    PROXIES+=("adit-$FLEET-proxy-$i")
-    PIPS+=("$(ip_of "adit-$FLEET-proxy-$i")")
-done
+# The proxies the fleet actually has, in index order: a proxy that never placed (capacity) leaves a
+# gap in the numbering (G2 run 4: proxy-5), so N is what is there, not what was asked for.
+while read -r p; do
+    PROXIES+=("$p")
+    PIPS+=("$(ip_of "$p")")
+done < <(awk -v f="adit-$FLEET-proxy-" 'index($1,f)==1{print $1}' <<<"$status" | sort -t- -k4 -n)
+if (( ${#PROXIES[@]} != N )); then
+    echo "fleet has ${#PROXIES[@]} proxies, not $N: using ${#PROXIES[@]}" | tee -a "$OUT/run.log"
+    N=${#PROXIES[@]}
+fi
 URLS=$(printf 'http://%s:8480,' "${PIPS[@]}")
 URLS=${URLS%,}
 log "fleet=$FLEET client=$CLIENT ($CIP) proxies=${PROXIES[*]} ips=${PIPS[*]} ref=$ADIT_REF"
