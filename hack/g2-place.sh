@@ -59,6 +59,10 @@ for tr in "${TRIES[@]}"; do
     used=$(aws ec2 describe-addresses --region "$r" --query 'length(Addresses)' --output text 2>/dev/null)
     pefa=0
     if (( ${lim:-0} - ${used:-0} < 9 )); then pefa=1; fi
+    if [[ ${REQUIRE_ALL_RAILS-0} == 1 && $pefa == 1 ]]; then
+        echo "[$(date -u +%TZ)] $r: Elastic IPs ${used:-?}/${lim:-?} cannot give every proxy both rails; skipping (REQUIRE_ALL_RAILS)" | tee -a "$LOG"
+        continue
+    fi
     if (( ${lim:-0} - ${used:-0} < 1 )); then echo "[$(date -u +%TZ)] $r: no free Elastic IP for the client; skipping" | tee -a "$LOG"; continue; fi
     ccap=$(awk -v p="$cprice" 'BEGIN{printf "%d", p*2+5}')
     pcap=$(awk -v p="$pprice" 'BEGIN{printf "%d", p*2+3}')
