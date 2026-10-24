@@ -647,3 +647,34 @@ func efaShortfall(have, max int) string {
 	}
 	return ""
 }
+
+// CleanupEIPs runs `spawn cleanup --elastic-ips` in region: it releases only Elastic IPs spawn
+// allocated for multi-interface EFA launches whose instance is gone and that are attached to
+// nothing (spawn 0.142.0; spawn#1232). A spot reclaim leaves one behind, and each bills and
+// counts toward the region's Elastic IP limit.
+func CleanupEIPs(ctx context.Context, spawn, profile, region string) (string, error) {
+	cmd := exec.CommandContext(ctx, spawn, "cleanup", "--elastic-ips", "--region", region, "-y")
+	cmd.Env = append(os.Environ(), "AWS_REGION="+region)
+	if profile != "" {
+		cmd.Env = append(cmd.Env, "AWS_PROFILE="+profile)
+	}
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+// OrphanEIPs lists spawn launch Elastic IPs (tagged spawn:instance-id) attached to nothing.
+func OrphanEIPs(ctx context.Context, c *ec2.Client) ([]string, error) {
+	out, err := c.DescribeAddresses(ctx, &ec2.DescribeAddressesInput{
+		Filters: []types.Filter{{Name: aws.String("tag-key"), Values: []string{"spawn:instance-id"}}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	var orphans []string
+	for _, a := range out.Addresses {
+		if a.AssociationId == nil {
+			orphans = append(orphans, aws.ToString(a.PublicIp)+" "+aws.ToString(a.AllocationId))
+		}
+	}
+	return orphans, nil
+}
