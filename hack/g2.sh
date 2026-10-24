@@ -11,6 +11,7 @@
 #   plans     presign T2, T2-64 (its first 64 objects) and T1 on the client
 #   confirm50 E<N> on T2-64 unpinned vs pinned, counting NIXL duplicate-fragment warnings (#50)
 #   repro51   #51 client-abort reproduction: modes x runs on T2-64 (bench/paths/repro51.sh)
+#   csweep    #53: E<N> on T2 at client concurrency CSWEEP_CONC (128 256 512), CSWEEP_CYCLES each
 #   ladder    proxy ladder: ARMS (E8 E4 E2 E1) interleaved over CYCLES on T2, all GPUs
 #   sweep     at E<N>: chunk 4/16 MiB and slots SWEEP_SLOTS, one T2 read each (restarts the proxies)
 #   t1        T1 at E<N>, striped and spread over all GPUs, 3 runs
@@ -155,6 +156,16 @@ step_repro51() {
     on "$CLIENT" "cd /tmp && tar czf /tmp/repro51.tgz g2-repro51.csv g2-repro51-r51 && aws s3 cp --quiet /tmp/repro51.tgz s3://$BUCKET/adit/g2/$(basename "$OUT")/repro51.tgz --region $REGION && echo pushed"
 }
 
+step_csweep() {
+    # #53: E<N> on T2 at several client concurrencies (objects in flight), CSWEEP_CYCLES cycles,
+    # one output (and per-arm snapshot directory) per level so levels do not overwrite each other,
+    # rotated, same proxies (no restart). CSWEEP_CONC overrides the levels.
+    for cc in ${CSWEEP_CONC:-128 256 512}; do
+        log "csweep: E$N on T2 at concurrency $cc"
+        client_run "csweep-c$cc" "PLAN=/tmp/t2-plan.jsonl PROXIES=$URLS ARMS=E$N CYCLES=${CSWEEP_CYCLES:-2} STRIPE=0 E_ARGS=\"$E_ARGS\" DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$cc OUT=/tmp/g2-csweep-c$cc.csv bash bench/paths/interleave.sh T2"
+    done
+}
+
 step_ladder() {
     log "ladder: $ARMS x $CYCLES cycles on T2"
     client_run ladder "PLAN=/tmp/t2-plan.jsonl PROXIES=$URLS ARMS=\"$ARMS\" STRIPE=0 E_ARGS=\"$E_ARGS\" $common OUT=/tmp/g2-ladder.csv bash bench/paths/interleave.sh T2"
@@ -184,7 +195,7 @@ step_bsweep() {
     # Path B at its best on this client before H-ceiling (law 3): threads x task size x objects in
     # flight on T2-64, 8 GPUs, one read each, cold. BSWEEP_* override the grid.
     log "bsweep: KvikIO RemoteFile grid on T2-64"
-    client_run bsweep "PLAN=/tmp/t2-64-plan.jsonl DEVICES=$DEVS BUF_GIB=$BUF_GIB THREADS=\"${BSWEEP_THREADS:-128 512 1024}\" TASK_MIB=\"${BSWEEP_TASK_MIB:-16 64}\" CONC=\"${BSWEEP_CONC:-8 32}\" OUT=/tmp/g2-bsweep.csv bash bench/paths/B/sweep.sh T2-64"
+    client_run bsweep "PLAN=/tmp/t2-64-plan.jsonl DEVICES=$DEVS BUF_GIB=$BUF_GIB THREADS=\"${BSWEEP_THREADS:-512 2048}\" TASK_MIB=\"${BSWEEP_TASK_MIB:-4 8 16}\" CONC=\"${BSWEEP_CONC:-32 64 128}\" OUT=/tmp/g2-bsweep.csv bash bench/paths/B/sweep.sh T2-64"
 }
 
 step_ceiling() {
@@ -193,7 +204,7 @@ step_ceiling() {
 }
 
 step_collect() {
-    for f in confirm50 ladder sweep t1 ceiling bsweep; do
+    for f in confirm50 ladder csweep csweep-c128 csweep-c256 csweep-c512 sweep t1 ceiling bsweep; do
         on "$CLIENT" "test -f /tmp/g2-$f.csv && cat /tmp/g2-$f.csv" >"$OUT/g2-$f.csv"
         on "$CLIENT" "test -f /tmp/g2-$f.order && cat /tmp/g2-$f.order" >"$OUT/g2-$f.order"
     done
