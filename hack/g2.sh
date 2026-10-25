@@ -12,6 +12,7 @@
 #   confirm50 E<N> on T2-64 unpinned vs pinned, counting NIXL duplicate-fragment warnings (#50)
 #   repro51   #51 client-abort reproduction: modes x runs on T2-64 (bench/paths/repro51.sh)
 #   csweep    #53: E<N> on T2 at client concurrency CSWEEP_CONC (128 256 512), CSWEEP_CYCLES each
+#   slotcmp   E<N> on T2 at SLOTCMP_SLOTS (2048 4096), alternated per cycle, proxies restarted per level
 #   ladder    proxy ladder: ARMS (E8 E4 E2 E1) interleaved over CYCLES on T2, all GPUs
 #   sweep     at E<N>: chunk 4/16 MiB and slots SWEEP_SLOTS, one T2 read each (restarts the proxies)
 #   t1        T1 at E<N>, striped and spread over all GPUs, 3 runs
@@ -73,7 +74,7 @@ DEVS=$(on "$CLIENT" "nvidia-smi --query-gpu=index --format=csv,noheader | paste 
 NGPU=$(tr ',' '\n' <<<"$DEVS" | grep -c .)
 for a in $ARMS; do
     k=${a#E}
-    [[ $k =~ ^[0-9]+$ ]] && (( NGPU % k != 0 )) && log "WARNING: $a with $NGPU GPUs pinned is unbalanced (GPU g -> proxy g mod $k): $((NGPU % k)) proxies carry an extra GPU"
+    [[ ${DEVICES_PER_ARM-0} != 1 && $k =~ ^[0-9]+$ ]] && (( NGPU % k != 0 )) && log "WARNING: $a with $NGPU GPUs pinned is unbalanced (GPU g -> proxy g mod $k): $((NGPU % k)) proxies carry an extra GPU"
 done
 log "client GPUs: $DEVS"
 REPO=/opt/adit-src/adit
@@ -150,7 +151,7 @@ step_plans() {
         head -64 /tmp/t2-plan.jsonl >/tmp/t2-64-plan.jsonl; wc -l /tmp/t1-plan.jsonl /tmp/t2-plan.jsonl /tmp/t2-64-plan.jsonl" | tee -a "$OUT/run.log"
 }
 
-common="CYCLES=$CYCLES DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY"
+common="CYCLES=$CYCLES DEVICES=$DEVS DEVICES_PER_ARM=${DEVICES_PER_ARM-0} BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY"
 
 step_confirm50() {
     # #50 mechanism check: the same E8 read of T2-64 unpinned (8 proxies may write into one agent)
@@ -175,7 +176,22 @@ step_csweep() {
     # rotated, same proxies (no restart). CSWEEP_CONC overrides the levels.
     for cc in ${CSWEEP_CONC:-128 256 512}; do
         log "csweep: E$N on T2 at concurrency $cc"
-        client_run "csweep-c$cc" "PLAN=/tmp/t2-plan.jsonl PROXIES=$URLS ARMS=E$N CYCLES=${CSWEEP_CYCLES:-2} STRIPE=0 E_ARGS=\"$E_ARGS\" DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$cc OUT=/tmp/g2-csweep-c$cc.csv bash bench/paths/interleave.sh T2"
+        client_run "csweep-c$cc" "PLAN=/tmp/t2-plan.jsonl PROXIES=$URLS ARMS=E$N CYCLES=${CSWEEP_CYCLES:-2} STRIPE=0 E_ARGS=\"$E_ARGS\" DEVICES=$DEVS DEVICES_PER_ARM=${DEVICES_PER_ARM-0} BUF_GIB=$BUF_GIB E_CONCURRENCY=$cc OUT=/tmp/g2-csweep-c$cc.csv bash bench/paths/interleave.sh T2"
+    done
+}
+
+step_slotcmp() {
+    # Same-session slot attribution (#53): E<N> on T2 at each SLOTCMP_SLOTS level, alternating the
+    # level order per cycle (SLOTCMP_CYCLES), restarting the proxies with that pool each time. One
+    # output and snapshot directory per level. Leaves the proxies at the last level run.
+    local levels=(${SLOTCMP_SLOTS:-2048 4096}) c k s
+    for c in $(seq 1 "${SLOTCMP_CYCLES:-3}"); do
+        for k in "${!levels[@]}"; do
+            s=${levels[$(( (k + c - 1) % ${#levels[@]} ))]}
+            log "slotcmp: cycle $c, slots $s"
+            start_proxies "--chunk-mib 8 --slots $s --throughput-gbps 600" "s$s"
+            client_run "slotcmp-c$c-s$s" "PLAN=/tmp/t2-plan.jsonl PROXIES=$URLS ARMS=E$N CYCLES=1 STRIPE=0 E_ARGS=\"$E_ARGS\" DEVICES=$DEVS DEVICES_PER_ARM=${DEVICES_PER_ARM-0} BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY OUT=/tmp/g2-slotcmp-s$s.csv bash bench/paths/interleave.sh T2"
+        done
     done
 }
 
@@ -217,7 +233,7 @@ step_ceiling() {
 }
 
 step_collect() {
-    for f in confirm50 ladder csweep csweep-c128 csweep-c256 csweep-c512 sweep t1 ceiling bsweep; do
+    for f in confirm50 ladder csweep csweep-c128 csweep-c256 csweep-c512 slotcmp-s2048 slotcmp-s4096 sweep t1 ceiling bsweep; do
         on "$CLIENT" "test -f /tmp/g2-$f.csv && cat /tmp/g2-$f.csv" >"$OUT/g2-$f.csv"
         on "$CLIENT" "test -f /tmp/g2-$f.order && cat /tmp/g2-$f.order" >"$OUT/g2-$f.order"
     done
