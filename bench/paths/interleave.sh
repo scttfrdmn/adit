@@ -15,7 +15,7 @@
 # Each arm = one read of the workload, one results row, the same oracle and counter window as the
 # per-path runners.
 #
-# Knobs: DEVICES (GPUs, default 0), BUF_GIB (per GPU, default 65), CHUNK_MIB (E, default 8), B_CONCURRENCY (objects in flight
+# Knobs: DEVICES (GPUs, default 0), DEVICES_PER_ARM (1: arm E<k> uses the first k GPUs), BUF_GIB (per GPU, default 65), CHUNK_MIB (E, default 8), B_CONCURRENCY (objects in flight
 # for B, default 1), E_CONCURRENCY (default 1), STRIPE, E_ARGS (extra adit-get flags, e.g.
 # "--spread --chunk-mib 16 --nixl-progress-delay-us 100").
 P=X
@@ -64,14 +64,19 @@ arm() {
         E[0-9]*)
             local k=${a#E} st=()
             (( k >= 1 && k <= ${#PX[@]} )) || { log "arm $a: only ${#PX[@]} proxies"; return 1; }
-            local px
+            local px devs=$DEVICES
             px=$(IFS=,; echo "${PX[*]:0:k}")
+            # DEVICES_PER_ARM=1: arm E<k> uses only the first k GPUs, one per proxy, so every rung
+            # is balanced under --pin-gpu-proxy (G2 run 5; #60 for the full 8-proxy ladder).
+            if [[ ${DEVICES_PER_ARM-0} == 1 ]]; then
+                devs=$(tr ',' '\n' <<<"$DEVICES" | head -n "$k" | paste -sd, -)
+            fi
             [[ $STRIPE == 1 && $k -gt 1 ]] && st=(--stripe)
             snap "c$c-$a-pre" "${PX[@]:0:k}"
             # NIXL warnings (e.g. "Duplicate fragment received": #50) land in the arm's stderr file.
             export NIXL_LOG_LEVEL=${NIXL_LOG_LEVEL:-WARN}
             # shellcheck disable=SC2086  # E_ARGS is a flag list
-            adit-get --proxies "$px" "${st[@]}" --plan "$PLAN" --agent-name "il-$a-$c-$$" --devices "$DEVICES" \
+            adit-get --proxies "$px" "${st[@]}" --plan "$PLAN" --agent-name "il-$a-$c-$$" --devices "$devs" \
                 --buffer-gib "$BUF_GIB" --chunk-mib "$CHUNK_MIB" --concurrency "$E_CONCURRENCY" --runs 1 $E_ARGS \
                 --meta path=E --meta "workload=$WORKLOAD" --meta "cold=$COLD" \
                 --meta "client_instance=$CLIENT_INSTANCE" --meta "commit=$COMMIT" --out "$OUT" 2>"$SNAP/c$c-$a.stderr" | grep -E '^E,' | tail -1

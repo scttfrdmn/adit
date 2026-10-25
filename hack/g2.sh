@@ -74,7 +74,7 @@ DEVS=$(on "$CLIENT" "nvidia-smi --query-gpu=index --format=csv,noheader | paste 
 NGPU=$(tr ',' '\n' <<<"$DEVS" | grep -c .)
 for a in $ARMS; do
     k=${a#E}
-    [[ $k =~ ^[0-9]+$ ]] && (( NGPU % k != 0 )) && log "WARNING: $a with $NGPU GPUs pinned is unbalanced (GPU g -> proxy g mod $k): $((NGPU % k)) proxies carry an extra GPU"
+    [[ ${DEVICES_PER_ARM-0} != 1 && $k =~ ^[0-9]+$ ]] && (( NGPU % k != 0 )) && log "WARNING: $a with $NGPU GPUs pinned is unbalanced (GPU g -> proxy g mod $k): $((NGPU % k)) proxies carry an extra GPU"
 done
 log "client GPUs: $DEVS"
 REPO=/opt/adit-src/adit
@@ -151,7 +151,7 @@ step_plans() {
         head -64 /tmp/t2-plan.jsonl >/tmp/t2-64-plan.jsonl; wc -l /tmp/t1-plan.jsonl /tmp/t2-plan.jsonl /tmp/t2-64-plan.jsonl" | tee -a "$OUT/run.log"
 }
 
-common="CYCLES=$CYCLES DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY"
+common="CYCLES=$CYCLES DEVICES=$DEVS DEVICES_PER_ARM=${DEVICES_PER_ARM-0} BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY"
 
 step_confirm50() {
     # #50 mechanism check: the same E8 read of T2-64 unpinned (8 proxies may write into one agent)
@@ -176,7 +176,7 @@ step_csweep() {
     # rotated, same proxies (no restart). CSWEEP_CONC overrides the levels.
     for cc in ${CSWEEP_CONC:-128 256 512}; do
         log "csweep: E$N on T2 at concurrency $cc"
-        client_run "csweep-c$cc" "PLAN=/tmp/t2-plan.jsonl PROXIES=$URLS ARMS=E$N CYCLES=${CSWEEP_CYCLES:-2} STRIPE=0 E_ARGS=\"$E_ARGS\" DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$cc OUT=/tmp/g2-csweep-c$cc.csv bash bench/paths/interleave.sh T2"
+        client_run "csweep-c$cc" "PLAN=/tmp/t2-plan.jsonl PROXIES=$URLS ARMS=E$N CYCLES=${CSWEEP_CYCLES:-2} STRIPE=0 E_ARGS=\"$E_ARGS\" DEVICES=$DEVS DEVICES_PER_ARM=${DEVICES_PER_ARM-0} BUF_GIB=$BUF_GIB E_CONCURRENCY=$cc OUT=/tmp/g2-csweep-c$cc.csv bash bench/paths/interleave.sh T2"
     done
 }
 
@@ -190,7 +190,7 @@ step_slotcmp() {
             s=${levels[$(( (k + c - 1) % ${#levels[@]} ))]}
             log "slotcmp: cycle $c, slots $s"
             start_proxies "--chunk-mib 8 --slots $s --throughput-gbps 600" "s$s"
-            client_run "slotcmp-c$c-s$s" "PLAN=/tmp/t2-plan.jsonl PROXIES=$URLS ARMS=E$N CYCLES=1 STRIPE=0 E_ARGS=\"$E_ARGS\" DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY OUT=/tmp/g2-slotcmp-s$s.csv bash bench/paths/interleave.sh T2"
+            client_run "slotcmp-c$c-s$s" "PLAN=/tmp/t2-plan.jsonl PROXIES=$URLS ARMS=E$N CYCLES=1 STRIPE=0 E_ARGS=\"$E_ARGS\" DEVICES=$DEVS DEVICES_PER_ARM=${DEVICES_PER_ARM-0} BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY OUT=/tmp/g2-slotcmp-s$s.csv bash bench/paths/interleave.sh T2"
         done
     done
 }
