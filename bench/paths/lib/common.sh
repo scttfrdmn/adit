@@ -19,6 +19,16 @@ fi
 COMMIT=${COMMIT:-$(awk -F= '/^adit=/{print $2}' /var/lib/adit/versions 2>/dev/null)}
 log() { echo "[$(date -u +%FT%TZ)] $P $WORKLOAD: $*"; }
 aditctl region-check --bucket "$BUCKET" --region "$REGION" || { log "region check failed; refusing to run"; exit 1; }
-cold() { [[ $COLD == 1 ]] && sudo bash hack/drop-caches.sh >/dev/null; }
+# Each drop's status line goes to ${OUT%.csv}.cold, one per cold rung, so every cold=1 row has its
+# evidence (#70); a failed drop is also logged to stderr.
+cold() {
+    [[ $COLD == 1 ]] || return 0
+    local r st
+    r=$(sudo bash hack/drop-caches.sh 2>&1)
+    st=$?
+    echo "$r" >>"${OUT%.csv}.cold"
+    (( st == 0 )) || log "WARNING: $r" >&2
+    return 0
+}
 META=(--meta "path=$P" --meta "workload=$WORKLOAD" --meta "cold=$COLD" --meta "client_instance=$CLIENT_INSTANCE" --meta "commit=$COMMIT")
 log "runs=$RUNS cold=$COLD region=$REGION bucket=$BUCKET out=$OUT commit=$COMMIT"

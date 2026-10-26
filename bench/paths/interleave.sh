@@ -12,10 +12,18 @@
 #   B<threads>  KvikIO RemoteFile, <threads> threads, 64 MiB tasks, objects round-robin over DEVICES
 #   E<n>        adit through the first n of PROXIES (PROXY1,PROXY2 when PROXIES is unset); with
 #               STRIPE=1 (default) and n > 1 each object is striped across the n proxies
+#   G<g>P<ids>[-b<GiB>][-d<us>]
+#               pair probe (#53): the first g of DEVICES served by the proxies at indices <ids>
+#               (digits into PROXIES), one NIXL agent per GPU. With no more proxies than GPUs, GPU
+#               g is pinned to proxy g mod n; with more, objects go round-robin over the proxies.
+#               -b sets the per-GPU buffer (default BUF_GIB), -d the NIXL progress delay (default
+#               100). E.g. G1P0 (1 GPU, 1 proxy), G1P01 (1 GPU, 2 proxies), G2P0 (2 GPUs, 1 proxy).
+#               E_ARGS is not used.
 # Each arm = one read of the workload, one results row, the same oracle and counter window as the
 # per-path runners.
 #
-# Knobs: DEVICES (GPUs, default 0), DEVICES_PER_ARM (1: arm E<k> uses the first k GPUs), BUF_GIB (per GPU, default 65), CHUNK_MIB (E, default 8), B_CONCURRENCY (objects in flight
+# Knobs: CYCLE_BASE (added to the cycle number in snapshot names, for callers that run one cycle
+# per call; #71), DEVICES (GPUs, default 0), DEVICES_PER_ARM (1: arm E<k> uses the first k GPUs), BUF_GIB (per GPU, default 65), CHUNK_MIB (E, default 8), B_CONCURRENCY (objects in flight
 # for B, default 1), E_CONCURRENCY (default 1), STRIPE, E_ARGS (extra adit-get flags, e.g.
 # "--spread --chunk-mib 16 --nixl-progress-delay-us 100").
 P=X
@@ -40,19 +48,34 @@ SNAP=${OUT%.csv}-snap
 snap() {
     # Every loop variable is local: bash scoping is dynamic, and arm()'s cycle counter is `c`
     # (a global `c` here once redirected each arm's stderr into a sysfs path, skipping the arm).
+    # A proxy argument is a URL (saved as proxy-<position>) or <label>=<URL> (saved as <label>).
     local tag=$1 p d f i=0
     shift
     mkdir -p "$SNAP/$tag"
     for p in "$@"; do
-        curl -s -m 10 "$p/metrics" >"$SNAP/$tag/proxy-$i.txt"
+        if [[ $p == *=http* ]]; then
+            curl -s -m 10 "${p#*=}/metrics" >"$SNAP/$tag/${p%%=*}.txt"
+        else
+            curl -s -m 10 "$p/metrics" >"$SNAP/$tag/proxy-$i.txt"
+        fi
         i=$((i + 1))
     done
     for d in /sys/class/infiniband/*; do
         for f in "$d"/ports/1/hw_counters/*; do printf '%s %s %s\n' "$(basename "$d")" "$(basename "$f")" "$(cat "$f")"; done
     done >"$SNAP/$tag/client-efa.txt"
 }
+# Wait for an aborted adit-get to leave the GPUs (it can sit in teardown holding every GPU's
+# buffer: the next arm then fails with CUDA out-of-memory, G2 rerun); up to 180 s.
+gpu_wait() {
+    local a=$1 c=$2 w=0
+    while { pgrep -x adit-get >/dev/null || nvidia-smi --query-compute-apps=pid --format=csv,noheader | grep -q .; } && (( w < 180 )); do
+        sleep 2; w=$((w + 2))
+    done
+    (( w > 0 )) && log "arm $a cycle $c: waited ${w}s for the previous adit-get to release the GPUs"
+    return 0
+}
 arm() {
-    local a=$1 c=$2
+    local a=$1 c=$(( $2 + ${CYCLE_BASE:-0} ))
     cold
     case $a in
         B[0-9]*)
@@ -81,13 +104,32 @@ arm() {
                 --meta path=E --meta "workload=$WORKLOAD" --meta "cold=$COLD" \
                 --meta "client_instance=$CLIENT_INSTANCE" --meta "commit=$COMMIT" --out "$OUT" 2>"$SNAP/c$c-$a.stderr" | grep -E '^E,' | tail -1
             snap "c$c-$a-post" "${PX[@]:0:k}"
-            # An aborted adit-get can sit in teardown holding every GPU's buffer: the next arm would
-            # then fail with CUDA out-of-memory (G2 rerun). Wait for it to be gone (up to 180 s).
-            local w=0
-            while { pgrep -x adit-get >/dev/null || nvidia-smi --query-compute-apps=pid --format=csv,noheader | grep -q .; } && (( w < 180 )); do
-                sleep 2; w=$((w + 2))
+            gpu_wait "$a" "$c" ;;
+        G[0-9]*P[0-9]*)
+            local spec=${a%%-*} opts="" g ids buf=$BUF_GIB delay=100 o
+            [[ $a == *-* ]] && opts=${a#*-}
+            g=${spec#G}; g=${g%%P*}; ids=${spec#*P}
+            for o in ${opts//-/ }; do
+                case $o in b[0-9]*) buf=${o#b} ;; d[0-9]*) delay=${o#d} ;; *) log "arm $a: unknown option $o"; return 1 ;; esac
             done
-            (( w > 0 )) && log "arm $a cycle $c: waited ${w}s for the previous adit-get to release the GPUs" ;;
+            local devs px=() lab=() i pin=()
+            devs=$(tr ',' '\n' <<<"$DEVICES" | head -n "$g" | paste -sd, -)
+            (( $(tr ',' '\n' <<<"$devs" | grep -c .) == g )) || { log "arm $a: only $DEVICES"; return 1; }
+            for (( i = 0; i < ${#ids}; i++ )); do
+                local id=${ids:i:1}
+                (( id < ${#PX[@]} )) || { log "arm $a: no proxy $id"; return 1; }
+                px+=("${PX[$id]}"); lab+=("proxy-$id=${PX[$id]}")
+            done
+            (( ${#px[@]} <= g )) && pin=(--pin-gpu-proxy)
+            snap "c$c-$a-pre" "${lab[@]}"
+            export NIXL_LOG_LEVEL=${NIXL_LOG_LEVEL:-WARN}
+            adit-get --proxies "$(IFS=,; echo "${px[*]}")" --plan "$PLAN" --agent-name "il-$a-$c-$$" --devices "$devs" \
+                --agent-per-gpu "${pin[@]}" --nixl-progress-delay-us "$delay" \
+                --buffer-gib "$buf" --chunk-mib "$CHUNK_MIB" --concurrency "$E_CONCURRENCY" --runs 1 \
+                --meta path=E --meta "workload=$WORKLOAD" --meta "cold=$COLD" \
+                --meta "client_instance=$CLIENT_INSTANCE" --meta "commit=$COMMIT" --out "$OUT" 2>"$SNAP/c$c-$a.stderr" | grep -E '^E,' | tail -1
+            snap "c$c-$a-post" "${lab[@]}"
+            gpu_wait "$a" "$c" ;;
         *) log "unknown arm $a"; return 1 ;;
     esac
 }
