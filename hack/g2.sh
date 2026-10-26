@@ -8,12 +8,15 @@
 #   health    hack/health.sh per proxy against the client, ALL_RAILS=1: STOPS adit-proxy and probes the
 #             pair with separate probe processes (not the measured proxies); run start after it
 #   start     start adit-proxy on every proxy (PROXY_ARGS) and read its configuration back
-#   plans     presign T2, T2-64 (its first 64 objects) and T1 on the client
+#   plans     presign T2, T2-64 / T2-256 (its first 64 / 256 objects) and T1 on the client
 #   confirm50 E<N> on T2-64 unpinned vs pinned, counting NIXL duplicate-fragment warnings (#50)
 #   repro51   #51 client-abort reproduction: modes x runs on T2-64 (bench/paths/repro51.sh)
 #   csweep    #53: E<N> on T2 at client concurrency CSWEEP_CONC (128 256 512), CSWEEP_CYCLES each
 #   slotcmp   E<N> on T2 at SLOTCMP_SLOTS (2048 4096), alternated per cycle, proxies restarted per level
 #   ladder    proxy ladder: ARMS (E8 E4 E2 E1) interleaved over CYCLES on T2, all GPUs
+#   pairs     per-pair cap probe (#53): PAIR_ARMS (G<g>P<ids> arms, bench/paths/interleave.sh)
+#             interleaved over PAIR_CYCLES on T2-256
+#   pairslots PAIRSLOT_ARMS at SLOTCMP_SLOTS, alternated per cycle, proxies restarted per level
 #   sweep     at E<N>: chunk 4/16 MiB and slots SWEEP_SLOTS, one T2 read each (restarts the proxies)
 #   t1        T1 at E<N>, striped and spread over all GPUs, 3 runs
 #   bsweep    path B tuning grid on T2-64 (threads x task size x objects in flight), all GPUs
@@ -148,7 +151,8 @@ step_start() {
 step_plans() {
     on "$CLIENT" "command -v aditctl >/dev/null || (aws s3 cp --only-show-errors s3://$BUCKET/adit/bin/aditctl-linux-amd64 /tmp/aditctl && sudo install /tmp/aditctl /usr/local/bin/aditctl)
         for w in t1 t2; do aws s3 cp --only-show-errors s3://$BUCKET/adit/manifests/\$w.jsonl /tmp/\$w.jsonl && aditctl presign --region $REGION --manifest /tmp/\$w.jsonl --out /tmp/\$w-plan.jsonl --ttl 8h; done
-        head -64 /tmp/t2-plan.jsonl >/tmp/t2-64-plan.jsonl; wc -l /tmp/t1-plan.jsonl /tmp/t2-plan.jsonl /tmp/t2-64-plan.jsonl" | tee -a "$OUT/run.log"
+        head -64 /tmp/t2-plan.jsonl >/tmp/t2-64-plan.jsonl; head -256 /tmp/t2-plan.jsonl >/tmp/t2-256-plan.jsonl
+        wc -l /tmp/t1-plan.jsonl /tmp/t2-plan.jsonl /tmp/t2-64-plan.jsonl /tmp/t2-256-plan.jsonl" | tee -a "$OUT/run.log"
 }
 
 common="CYCLES=$CYCLES DEVICES=$DEVS DEVICES_PER_ARM=${DEVICES_PER_ARM-0} BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY"
@@ -190,9 +194,37 @@ step_slotcmp() {
             s=${levels[$(( (k + c - 1) % ${#levels[@]} ))]}
             log "slotcmp: cycle $c, slots $s"
             start_proxies "--chunk-mib 8 --slots $s --throughput-gbps 600" "s$s"
-            client_run "slotcmp-c$c-s$s" "PLAN=/tmp/t2-plan.jsonl PROXIES=$URLS ARMS=E$N CYCLES=1 STRIPE=0 E_ARGS=\"$E_ARGS\" DEVICES=$DEVS DEVICES_PER_ARM=${DEVICES_PER_ARM-0} BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY OUT=/tmp/g2-slotcmp-s$s.csv bash bench/paths/interleave.sh T2"
+            client_run "slotcmp-c$c-s$s" "PLAN=/tmp/t2-plan.jsonl PROXIES=$URLS ARMS=E$N CYCLES=1 CYCLE_BASE=$((c - 1)) STRIPE=0 E_ARGS=\"$E_ARGS\" DEVICES=$DEVS DEVICES_PER_ARM=${DEVICES_PER_ARM-0} BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY OUT=/tmp/g2-slotcmp-s$s.csv bash bench/paths/interleave.sh T2"
         done
     done
+}
+
+step_pairs() {
+    # Per-pair cap (#53, G2 run 5: one GPU from one proxy capped near 175 Gb/s). Defaults, with
+    # proxies 0 and 1 on two rails and proxy 2 on one:
+    #   G1P0   1 GPU, 1 proxy (the run 5 E1 pair)       G1P01  1 GPU, 2 proxies: a per-GPU cap stays
+    #   G2P0   2 GPUs, 1 proxy: a per-proxy cap stays    G1P2   1 GPU, 1 one-rail proxy
+    #   G2P01  2 GPUs, 2 proxies pinned (balanced E2)    G1P0-b16 / -b96   16 / 3 waves (64 GiB: 4)
+    #   G1P0-d0  NIXL progress delay 0 (100 elsewhere)
+    local arms=${PAIR_ARMS:-G1P0 G1P01 G2P0 G1P2 G2P01 G1P0-b16 G1P0-b96 G1P0-d0}
+    log "pairs: $arms x ${PAIR_CYCLES:-3} cycles on T2-256"
+    client_run pairs "PLAN=/tmp/t2-256-plan.jsonl PROXIES=$URLS ARMS=\"$arms\" CYCLES=${PAIR_CYCLES:-3} DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY OUT=/tmp/g2-pairs.csv bash bench/paths/interleave.sh T2-256"
+}
+
+step_pairslots() {
+    # The slot lever where it binds (G2 run 5 E1: 0.75-0.82 s slot wait at 4096): PAIRSLOT_ARMS at
+    # each SLOTCMP_SLOTS level, alternating the order per cycle, proxies restarted per level; then
+    # the proxies go back to PROXY_ARGS.
+    local levels=(${SLOTCMP_SLOTS:-2048 4096}) c k s
+    for c in $(seq 1 "${PAIR_CYCLES:-3}"); do
+        for k in "${!levels[@]}"; do
+            s=${levels[$(( (k + c - 1) % ${#levels[@]} ))]}
+            log "pairslots: cycle $c, slots $s"
+            start_proxies "--chunk-mib 8 --slots $s --throughput-gbps 600" "s$s"
+            client_run "pairslots-c$c-s$s" "PLAN=/tmp/t2-256-plan.jsonl PROXIES=$URLS ARMS=\"${PAIRSLOT_ARMS:-G1P0 G1P2}\" CYCLES=1 CYCLE_BASE=$((c - 1)) DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY OUT=/tmp/g2-pairslots-s$s.csv bash bench/paths/interleave.sh T2-256"
+        done
+    done
+    start_proxies "$PROXY_ARGS" base
 }
 
 step_ladder() {
@@ -233,9 +265,11 @@ step_ceiling() {
 }
 
 step_collect() {
-    for f in confirm50 ladder csweep csweep-c128 csweep-c256 csweep-c512 slotcmp-s2048 slotcmp-s4096 sweep t1 ceiling bsweep; do
+    for f in confirm50 ladder csweep csweep-c128 csweep-c256 csweep-c512 slotcmp-s2048 slotcmp-s4096 sweep t1 ceiling bsweep pairs pairslots-s2048 pairslots-s4096; do
         on "$CLIENT" "test -f /tmp/g2-$f.csv && cat /tmp/g2-$f.csv" >"$OUT/g2-$f.csv"
         on "$CLIENT" "test -f /tmp/g2-$f.order && cat /tmp/g2-$f.order" >"$OUT/g2-$f.order"
+        # One drop_caches status line per cold rung (#70).
+        on "$CLIENT" "test -f /tmp/g2-$f.cold && cat /tmp/g2-$f.cold" >"$OUT/g2-$f.cold"
     done
     for k in "${!PIPS[@]}"; do
         on "$CLIENT" "curl -s http://${PIPS[$k]}:8480/metrics" >"$OUT/metrics-${PROXIES[$k]}.txt"

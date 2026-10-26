@@ -9,10 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`hack/g2.sh` `slotcmp` names each cycle's snapshots `c<cycle>-…`** (`CYCLE_BASE` in `interleave.sh`). They used to overwrite one another, leaving only the last cycle (#71).
 - **NIXL and `nixl-sys` are pinned to upstream main `a9f1f7a7`** (Scott, 2026-10-23); they were v1.2.0. That commit has sender-keyed LIBFABRIC notifications (ai-dynamo/nixl#2294, the fix for #50) and the endpoint/CQ lock (#2308, the likely fix for #51); no release has either yet. `hack/install.sh` builds that commit and rebuilds when the ref changes.
 
 ### Added
 
+- **Per-pair cap probe (#53).**
+  - `bench/paths/interleave.sh` gains `G<g>P<ids>[-b<GiB>][-d<us>]` arms: the first g GPUs, served by the proxies at the listed indices, with optional per-arm buffer size and NIXL progress delay.
+  - `hack/g2.sh` gains `pairs` and `pairslots` steps on a new T2-256 plan.
+  - `hack/g2-place.sh` gains `CLIENT_TYPES` and `FLEET_EIPS`.
+- **Every cold rung's `drop_caches` is now verified (#70).** `hack/drop-caches.sh` reports the page cache before and after and fails on error. `cold()` keeps each status line in `<out>.cold`, and the `collect` step fetches it.
 - **G2 run 5 results (balanced ladder, one GPU per proxy)** in `bench/results/paths-g2r5.csv`: p5en with 7 × c8gn.48xlarge on both EFA rails, 4096 slots. There are 24 rows (slotcmp, ladder, csweep), and 23 are oracle ok. The partial row is the #51 abort. `hack/g2.sh` gains the `slotcmp` step and `DEVICES_PER_ARM`, which `bench/paths/interleave.sh` honours by giving E\<k\> the first k GPUs. `hack/g2-place.sh` tries proxies first in us-east-1c and us-east-1f.
 - **G2 run 4 results (two-rail proxies)** in `bench/results/paths-g2r4.csv`: p5en with 7 × c8gn.48xlarge on both EFA rails, NIXL `a9f1f7a7`. `hack/g2-place.sh` gains `REGIONS` and `REQUIRE_ALL_RAILS`, and `hack/g2.sh` takes the proxy list from the fleet, so a proxy that never placed leaves no gap.
 - **`aditctl teardown` releases orphaned spawn Elastic IPs.** In each region it runs `spawn cleanup --elastic-ips` (spawn 0.142.0, spawn#1232), then verifies on EC2 that no unassociated spawn launch Elastic IP remains, failing otherwise. `--no-eip-cleanup` skips this.

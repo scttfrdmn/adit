@@ -41,6 +41,8 @@ for tr in "${TRIES[@]}"; do
     read -r t r <<<"$tr"
     # REGIONS (space-separated) limits the tries, e.g. REGIONS=us-east-1 for two-rail runs.
     [[ -n ${REGIONS-} && " $REGIONS " != *" $r "* ]] && continue
+    # CLIENT_TYPES limits the client type, e.g. p5en.48xlarge for the per-pair probe (#53).
+    [[ -n ${CLIENT_TYPES-} && " $CLIENT_TYPES " != *" $t "* ]] && continue
     IFS='|' read -r azs cami pami bkt cprice pprice <<<"${REG[$r]}"
     if [[ $t == p5.48xlarge ]]; then
         cprice=55.04
@@ -58,7 +60,8 @@ for tr in "${TRIES[@]}"; do
         --query 'AccountAttributes[0].AttributeValues[0].AttributeValue' --output text 2>/dev/null)
     used=$(aws ec2 describe-addresses --region "$r" --query 'length(Addresses)' --output text 2>/dev/null)
     pefa=0
-    if (( ${lim:-0} - ${used:-0} < 9 )); then pefa=1; fi
+    # FLEET_EIPS: Elastic IPs the whole fleet needs (client + two-rail proxies; default 9 for 8).
+    if (( ${lim:-0} - ${used:-0} < ${FLEET_EIPS:-9} )); then pefa=1; fi
     if [[ ${REQUIRE_ALL_RAILS-0} == 1 && $pefa == 1 ]]; then
         echo "[$(date -u +%TZ)] $r: Elastic IPs ${used:-?}/${lim:-?} cannot give every proxy both rails; skipping (REQUIRE_ALL_RAILS)" | tee -a "$LOG"
         continue
