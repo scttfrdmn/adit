@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-pair cap probe results** in `bench/results/paths-g2pp.csv`: 36 rows from us-west-2b, on a p5en with three c8gn.48xlarge (two-rail, two-rail, one-rail), all oracle ok. They cover the pairs arms (1–2 GPUs × 1–2 proxies, one rail, buffer 16/64/96 GiB, progress delay 0) and pairslots at 2048/4096 slots.
 - **Per-pair cap probe (#53).**
   - `bench/paths/interleave.sh` gains `G<g>P<ids>[-b<GiB>][-d<us>]` arms: the first g GPUs, served by the proxies at the listed indices, with optional per-arm buffer size and NIXL progress delay.
   - `hack/g2.sh` gains `pairs` and `pairslots` steps on a new T2-256 plan.
