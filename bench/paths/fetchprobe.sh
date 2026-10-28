@@ -10,8 +10,11 @@
 #
 #   PLAN=/tmp/t2-256-plan.jsonl CYCLES=3 ARMS="s2048o64 s4096o64" OUT=/tmp/fp.csv bash bench/paths/fetchprobe.sh T2-256
 #
-# Arm s<slots>o<objects in flight>[c<max connections>][t<CRT target Gb/s>]; target default 600
-# (adit-proxy's G2 setting), max connections default unset (CRT chooses).
+# Arm s<slots>o<objects in flight>[c<max connections>][t<CRT target Gb/s>][i<n>]; target default 600
+# (adit-proxy's G2 setting), max connections default unset (CRT chooses); i<n> binds the CRT's S3
+# connections to the first n interfaces of NET_IFACES (comma-separated; second-interface probe,
+# #53), unset uses the default route. Mid-run, each arm records the established sockets to port
+# 443 per local address and the bench's thread count (the CRT's own sizing, read back).
 P=F
 source "$(dirname "$0")/lib/common.sh"
 PLAN=${PLAN:?plan JSONL with presigned urls}
@@ -57,6 +60,14 @@ counters() {
     done
     cat /proc/net/dev
 }
+# NET_IFACES defaults to the box's ENA interfaces, the default-route interface first.
+if [[ -z ${NET_IFACES-} ]]; then
+    NET_IFACES=$( { ip route show default | awk '{print $5; exit}'
+        for nd in /sys/class/net/*; do
+            [[ -e $nd/device/driver && $(basename "$(readlink -f "$nd/device/driver")") == ena ]] && basename "$nd"
+        done; } | awk 'NF && !s[$0]++' | paste -sd, -)
+fi
+log "NET_IFACES=$NET_IFACES"
 topology | tee "$SNAP/topology.txt"
 arm() {
     local a=$1 c=$2 slots objs conn="" tgt=600 extra=()
@@ -65,12 +76,27 @@ arm() {
     [[ $a =~ c([0-9]+) ]] && conn=${BASH_REMATCH[1]}
     [[ $a =~ t([0-9]+) ]] && tgt=${BASH_REMATCH[1]}
     [[ -n $conn ]] && extra=(--max-connections "$conn")
+    if [[ $a =~ i([0-9]+) ]]; then
+        local nif ifs
+        nif=${BASH_REMATCH[1]}
+        ifs=$(tr ',' '\n' <<<"${NET_IFACES:?arm $a needs NET_IFACES}" | head -n "$nif" | paste -sd, -)
+        extra+=(--network-interfaces "$ifs")
+    fi
     cold
     counters >"$SNAP/c$c-$a-pre.txt"
     adit-fetch-bench --plan "$PLAN" --slots "$slots" --objects-inflight "$objs" --chunk-mib 8 \
         --throughput-gbps "$tgt" "${extra[@]}" --region "$REGION" --runs 1 --label "$a" \
-        --chunk-log "$SNAP/c$c-$a-chunks.csv" 2>"$SNAP/c$c-$a.stderr" >"$SNAP/c$c-$a.out"
-    local st=$?
+        --chunk-log "$SNAP/c$c-$a-chunks.csv" 2>"$SNAP/c$c-$a.stderr" >"$SNAP/c$c-$a.out" &
+    local pid=$! st
+    # Readback 3 s in: S3 sockets per local address and the process's thread count.
+    sleep "${READBACK_S:-3}"
+    {
+        echo "threads $(ls /proc/$pid/task 2>/dev/null | wc -l)"
+        ss -tnH state established '( dport = :443 )' | awk '{split($3,l,":"); n[l[1]]++} END{for (k in n) print "sockets", k, n[k]}'
+        ip -br -4 addr
+    } >"$SNAP/c$c-$a-readback.txt"
+    wait "$pid"
+    st=$?
     counters >"$SNAP/c$c-$a-post.txt"
     [[ -s $OUT ]] || grep '^label,' "$SNAP/c$c-$a.out" | head -1 >"$OUT"
     grep -v '^label,' "$SNAP/c$c-$a.out" | grep "^$a," | tail -1 | tee -a "$OUT"
