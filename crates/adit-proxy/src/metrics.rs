@@ -68,6 +68,8 @@ pub struct ConfigInfo {
     pub slots: u64,
     pub throughput_target_gbps: f64,
     pub max_connections: u64,
+    /// Interfaces the CRT binds to, comma-separated; empty for the default route.
+    pub network_interfaces: String,
     pub write_inflight: u64,
     pub meta_type: String,
     pub stub: bool,
@@ -121,12 +123,13 @@ impl Metrics {
         let _ = writeln!(
             o,
             "# HELP adit_proxy_config Configuration in force.\n# TYPE adit_proxy_config gauge\n\
-             adit_proxy_config{{backend=\"{}\",chunk_bytes=\"{}\",slots=\"{}\",throughput_target_gbps=\"{}\",max_connections=\"{}\",write_inflight=\"{}\",meta_type=\"{}\",stub=\"{}\"}} 1",
+             adit_proxy_config{{backend=\"{}\",chunk_bytes=\"{}\",slots=\"{}\",throughput_target_gbps=\"{}\",max_connections=\"{}\",network_interfaces=\"{}\",write_inflight=\"{}\",meta_type=\"{}\",stub=\"{}\"}} 1",
             cfg.backend,
             cfg.chunk_bytes,
             cfg.slots,
             cfg.throughput_target_gbps,
             cfg.max_connections,
+            cfg.network_interfaces,
             cfg.write_inflight,
             cfg.meta_type,
             cfg.stub

@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `PROFILE_ARMS` reruns arms under `perf record -g` after the cycles. Those rows are labelled `-perf` and are not comparison rows.
   - `hack/fetchprobe.sh` installs perf and sysstat on the box.
 - **Second-interface fetch probe results** in `bench/results/fetch-fp2nic.csv`: one c8gn.48xlarge with an IP on both network cards, `adit-fetch-bench` binding S3 to one interface or both (PR #77 branch). 15 rows, 0 failed chunks. Both interfaces carried traffic, but there was no lift.
+- **`--network-interfaces` on `adit-fetch-bench` and `adit-proxy`** (#53). Takes a comma-separated list of interfaces; the CRT binds S3 connections to them round-robin (`network_interface_names`), for multi-ENA proxies. The proxy reports it in `/metrics` `adit_proxy_config{network_interfaces=…}`.
 - **Second-interface arms in `bench/paths/fetchprobe.sh`** (#53).
   - `i<n>` binds the CRT to the first n of `NET_IFACES`. `NET_IFACES` defaults to the box's ENA interfaces, with the default-route interface first.
   - Each arm reads back, mid-run, the established S3 sockets per local address and the bench's thread count.
