@@ -18,6 +18,11 @@ PLAN=${PLAN:?plan JSONL with presigned urls}
 CYCLES=${CYCLES:-3}
 ARMS=(${ARMS:-s2048o64 s4096o64 s4096o16 s4096o128 s8192o128 s4096o64c256 s4096o64c1024 s4096o64t1200})
 n=${#ARMS[@]}
+# The CRT opens a connection per in-flight request: at the default 1,024 open files it runs out of
+# descriptors and chunks fail and retry (the first fetch-probe run, 2026-10-28: every arm above 256
+# connections). Same fix as adit-proxy in hack/g2.sh.
+ulimit -n "$(ulimit -Hn)"
+log "open files: $(ulimit -n)"
 SNAP=${OUT%.csv}-snap
 mkdir -p "$SNAP"
 imds() {
@@ -70,6 +75,9 @@ arm() {
     [[ -s $OUT ]] || grep '^label,' "$SNAP/c$c-$a.out" | head -1 >"$OUT"
     grep -v '^label,' "$SNAP/c$c-$a.out" | grep "^$a," | tail -1 | tee -a "$OUT"
     (( st == 0 )) || log "arm $a cycle $c: adit-fetch-bench exit $st"
+    local failed
+    failed=$(grep "^$a," "$SNAP/c$c-$a.out" | tail -1 | awk -F, '{print $16}')
+    [[ ${failed:-0} == 0 ]] || log "WARNING: arm $a cycle $c: $failed chunks failed" >&2
     gzip -f "$SNAP/c$c-$a-chunks.csv"
 }
 for c in $(seq 1 "$CYCLES"); do

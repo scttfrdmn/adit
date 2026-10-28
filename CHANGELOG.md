@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`bench/paths/fetchprobe.sh` raises the open-files limit to the hard limit and logs it, and warns when an arm has failed chunks.** The first run's arms above 256 CRT connections ran out of file descriptors at the default 1,024, so their chunks failed and retried. Those rows measure that defect, not the fetch path.
 - **`hack/g2.sh` `slotcmp` names each cycle's snapshots `c<cycle>-…`** (`CYCLE_BASE` in `interleave.sh`). They used to overwrite one another, leaving only the last cycle (#71).
 - **NIXL and `nixl-sys` are pinned to upstream main `a9f1f7a7`** (Scott, 2026-10-23); they were v1.2.0. That commit has sender-keyed LIBFABRIC notifications (ai-dynamo/nixl#2294, the fix for #50) and the endpoint/CQ lock (#2308, the likely fix for #51); no release has either yet. `hack/install.sh` builds that commit and rebuilds when the ref changes.
 
