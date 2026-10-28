@@ -9,11 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`bench/paths/fetchprobe.sh` raises the open-files limit to the hard limit and logs it, and warns when an arm has failed chunks.** The first run's arms above 256 CRT connections ran out of file descriptors at the default 1,024, so their chunks failed and retried. Those rows measure that defect, not the fetch path.
 - **`hack/g2.sh` `slotcmp` names each cycle's snapshots `c<cycle>-…`** (`CYCLE_BASE` in `interleave.sh`). They used to overwrite one another, leaving only the last cycle (#71).
 - **NIXL and `nixl-sys` are pinned to upstream main `a9f1f7a7`** (Scott, 2026-10-23); they were v1.2.0. That commit has sender-keyed LIBFABRIC notifications (ai-dynamo/nixl#2294, the fix for #50) and the endpoint/CQ lock (#2308, the likely fix for #51); no release has either yet. `hack/install.sh` builds that commit and rebuilds when the ref changes.
 
 ### Added
 
+- **Fetch-only probe results** in `bench/results/fetch-fp.csv`: one c8gn.48xlarge in us-east-1a, no GPU, T2-256, 8 arms × 3 cycles, 0 failed chunks. The rows carry median time to first byte and body time per chunk, and ENA inbound-allowance counts.
 - **Fetch-only probe (#53).** `bench/paths/fetchprobe.sh` runs `adit-fetch-bench` arms (slots, objects in flight, CRT max connections and throughput target), rotated over cycles on one proxy. Per arm it snapshots `ethtool -S` for each ENA interface, the EFA counters and `/proc/net/dev`, and keeps the per-chunk timing log. Beforehand it records the network card of every EFA device and ENA interface, and the route S3 traffic takes. `hack/fetchprobe.sh` drives it from the operator machine.
 - **Per-pair cap probe results** in `bench/results/paths-g2pp.csv`: 36 rows from us-west-2b, on a p5en with three c8gn.48xlarge (two-rail, two-rail, one-rail), all oracle ok. They cover the pairs arms (1–2 GPUs × 1–2 proxies, one rail, buffer 16/64/96 GiB, progress delay 0) and pairslots at 2048/4096 slots.
 - **Per-pair cap probe (#53).**
