@@ -31,7 +31,10 @@ grep -q 'install complete' "$OUT/refresh.txt" || { log "refresh failed; stopping
 on "aws s3 cp --only-show-errors s3://$BUCKET/adit/bin/aditctl-linux-arm64 /tmp/aditctl --region $REGION && sudo install /tmp/aditctl /usr/local/bin/aditctl
     aws s3 cp --only-show-errors s3://$BUCKET/adit/manifests/t2.jsonl /tmp/t2.jsonl --region $REGION && aditctl presign --region $REGION --manifest /tmp/t2.jsonl --out /tmp/t2-plan.jsonl --ttl 8h
     head -256 /tmp/t2-plan.jsonl >/tmp/t2-256-plan.jsonl; wc -l /tmp/t2-256-plan.jsonl; cat /var/lib/adit/versions" | tee -a "$OUT/run.log"
-pid=$(on "cd $REPO && bgrun -o /tmp/fp.out bash -c 'export BUCKET=$BUCKET REGION=$REGION; PLAN=/tmp/t2-256-plan.jsonl CYCLES=${CYCLES:-3} ${ARMS:+ARMS=\"$ARMS\"} OUT=/tmp/fp.csv bash bench/paths/fetchprobe.sh T2-256; echo EXIT=\$?'" | grep -o 'pid=[0-9]*' | cut -d= -f2)
+# Clear the previous run's outputs on the box: fetchprobe.sh appends (the first fetch probe's rerun
+# inherited its predecessor's rows).
+on "rm -rf /tmp/fp.csv /tmp/fp.order /tmp/fp.cold /tmp/fp-snap /tmp/fp.out" >/dev/null
+pid=$(on "cd $REPO && bgrun -o /tmp/fp.out bash -c 'export BUCKET=$BUCKET REGION=$REGION; PLAN=/tmp/t2-256-plan.jsonl CYCLES=${CYCLES:-3} ${ARMS:+ARMS=\"$ARMS\"} ${NET_IFACES:+NET_IFACES=$NET_IFACES} OUT=/tmp/fp.csv bash bench/paths/fetchprobe.sh T2-256; echo EXIT=\$?'" | grep -o 'pid=[0-9]*' | cut -d= -f2)
 [[ -n $pid ]] || { log "fetchprobe did not start"; exit 1; }
 t0=$SECONDS
 while :; do

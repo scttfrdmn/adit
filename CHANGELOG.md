@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Second-interface arms in `bench/paths/fetchprobe.sh`** (#53).
+  - `i<n>` binds the CRT to the first n of `NET_IFACES`. `NET_IFACES` defaults to the box's ENA interfaces, with the default-route interface first.
+  - Each arm reads back, mid-run, the established S3 sockets per local address and the bench's thread count.
+  - `hack/fetchprobe.sh` clears the box's previous outputs before a run.
 - **Fetch-only probe results** in `bench/results/fetch-fp.csv`: one c8gn.48xlarge in us-east-1a, no GPU, T2-256, 8 arms × 3 cycles, 0 failed chunks. The rows carry median time to first byte and body time per chunk, and ENA inbound-allowance counts.
 - **Fetch-only probe (#53).** `bench/paths/fetchprobe.sh` runs `adit-fetch-bench` arms (slots, objects in flight, CRT max connections and throughput target), rotated over cycles on one proxy. Per arm it snapshots `ethtool -S` for each ENA interface, the EFA counters and `/proc/net/dev`, and keeps the per-chunk timing log. Beforehand it records the network card of every EFA device and ENA interface, and the route S3 traffic takes. `hack/fetchprobe.sh` drives it from the operator machine.
 - **Per-pair cap probe results** in `bench/results/paths-g2pp.csv`: 36 rows from us-west-2b, on a p5en with three c8gn.48xlarge (two-rail, two-rail, one-rail), all oracle ok. They cover the pairs arms (1–2 GPUs × 1–2 proxies, one rail, buffer 16/64/96 GiB, progress delay 0) and pairslots at 2048/4096 slots.
