@@ -14,11 +14,11 @@
 # [i<n>]; h fetches over plain HTTP (--scheme http: TLS A/B, #76); target default 600
 # (adit-proxy's G2 setting), max connections default unset (CRT chooses); i<n> binds the CRT's S3
 # connections to the first n interfaces of NET_IFACES (comma-separated; second-interface probe,
-# #53), unset uses the default route. Mid-run (READBACK_AT seconds into the arm), each arm records
-# the bench process's own established TCP sockets per local address (ss -p, filtered by pid: the
-# CRT's real connection count, #79), its threads by name (CRT event loops vs tokio) and per-thread
-# CPU (pidstat -t). PROFILE_ARMS run once more after the cycles under perf record (call graphs;
-# their rows are labelled <arm>-perf and are perturbed by the profiler, not comparison rows).
+# #53), unset uses the default route.
+# Once a second for the whole arm, a sampler records the bench's socket fds (the CRT's connection
+# count, #79), its threads by name (CRT event loops vs tokio) and per-thread CPU (pidstat -t).
+# PROFILE_ARMS run once more after the cycles, the whole bench under perf record -g (rows labelled
+# <arm>-perf, perturbed by the profiler, not comparison rows).
 P=F
 source "$(dirname "$0")/lib/common.sh"
 PLAN=${PLAN:?plan JSONL with presigned urls}
@@ -90,35 +90,27 @@ arm() {
     fi
     cold
     counters >"$SNAP/c$c-$a-pre.txt"
-    adit-fetch-bench --plan "$PLAN" --slots "$slots" --objects-inflight "$objs" --chunk-mib 8 \
+    local pre=() st
+    # Profiled arms run the whole bench under perf (call graphs). The first seconds are the slot
+    # pool's allocation (kernel clear_page); perf-top separates it by symbol.
+    [[ -n $perf ]] && pre=(sudo perf record -F 99 -g -o "$SNAP/$a.perf.data" --)
+    "${pre[@]}" adit-fetch-bench --plan "$PLAN" --slots "$slots" --objects-inflight "$objs" --chunk-mib 8 \
         --throughput-gbps "$tgt" "${extra[@]}" --region "$REGION" --runs 1 --label "$a${perf:+-perf}" \
         --chunk-log "$SNAP/c$c-$a-chunks.csv" 2>"$SNAP/c$c-$a.stderr" >"$SNAP/c$c-$a.out" &
-    local pid=$! st t w=0
-    # The bench first allocates and zeroes its slot pool (32 GiB at 4096 x 8 MiB: several seconds of
-    # one core in the kernel) before any S3 traffic; readback and profile wait for its first S3
-    # socket (fetch-CPU probe 2026-10-29: both had sampled the allocation).
-    while (( w < 600 )) && ! sudo ss -tnpH state established | grep -q "pid=$pid,"; do
-        kill -0 "$pid" 2>/dev/null || break
-        sleep 0.1; w=$((w + 1))
-    done
-    echo "# first S3 socket after $((w / 10)).$((w % 10)) s" >>"$SNAP/c$c-$a-readback.txt"
-    if [[ -n $perf ]]; then
-        sudo perf record -F 99 -g -p "$pid" -o "$SNAP/$a.perf.data" -- sleep "${PERF_S:-5}" >/dev/null 2>&1
-    else
-        # Readback at READBACK_AT seconds (#79): this process's sockets (ss -p matches its pid),
-        # per local address and remote port; threads by name; per-thread CPU over 2 s.
-        for t in ${READBACK_AT:-2 5}; do
-            sleep "$(( t - ${last:-0} ))"; last=$t
-            {
-                echo "# t=${t}s"
-                sudo ss -tnpH state established | grep "pid=$pid," | awk '{n=split($3,l,":"); p=split($4,r,":"); k[l[1]" :"r[p]]++} END{for (x in k) print "sockets", x, k[x]}'
-                ps -L -o comm= -p "$pid" | sed -E 's/[0-9]+$//' | sort | uniq -c | sed 's/^/threads /'
-            } >>"$SNAP/c$c-$a-readback.txt"
-        done
-        unset last
-        pidstat -t -u -p "$pid" 1 2 2>/dev/null | awk '/Average:/ && $0 !~ /TGID/' >"$SNAP/c$c-$a-pidstat.txt"
+    local wpid=$! bpid="" i
+    # Sampler for the whole arm, once a second (#79): the bench's socket fds, threads by name, and
+    # per-thread CPU (pidstat). No ss: with thousands of sockets it is slower than a whole arm.
+    for i in $(seq 1 50); do bpid=$(pgrep -n -x adit-fetch-benc) && break; sleep 0.1; done
+    if [[ -n $bpid ]]; then
+        pidstat -t -u -p "$bpid" 1 >"$SNAP/c$c-$a-pidstat.txt" 2>/dev/null &
+        local spid=$!
+        while kill -0 "$bpid" 2>/dev/null; do
+            echo "t=$(date -u +%T.%N | cut -c1-12) sockets=$(sudo ls -l /proc/$bpid/fd 2>/dev/null | grep -c 'socket:') $(ps -L -o comm= -p "$bpid" 2>/dev/null | sed -E 's/[0-9]+$//' | sort | uniq -c | awk '{printf "%s=%s ", $2, $1}')"
+            sleep 1
+        done >"$SNAP/c$c-$a-readback.txt"
+        kill "$spid" 2>/dev/null
     fi
-    wait "$pid"
+    wait "$wpid"
     st=$?
     counters >"$SNAP/c$c-$a-post.txt"
     [[ -s $OUT ]] || grep '^label,' "$SNAP/c$c-$a.out" | head -1 >"$OUT"

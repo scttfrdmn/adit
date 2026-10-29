@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`bench/paths/fetchprobe.sh` samples once a second for the whole arm** (#79). It records the bench's socket fds, threads by name, and per-thread CPU (`pidstat` for the whole arm), and profiled arms run the whole bench under `perf record`. Polling `ss` with thousands of sockets was slower than an arm, so the earlier readback and profile came back empty.
 - **`bench/paths/fetchprobe.sh` readback and profiling wait for the bench's first S3 socket.** In the first fetch-CPU run, both sampled the slot-pool allocation instead of the transfer.
 - **`bench/paths/fetchprobe.sh` raises the open-files limit to the hard limit and logs it, and warns when an arm has failed chunks.** The first run's arms above 256 CRT connections ran out of file descriptors at the default 1,024, so their chunks failed and retried. Those rows measure that defect, not the fetch path.
 - **`hack/g2.sh` `slotcmp` names each cycle's snapshots `c<cycle>-…`** (`CYCLE_BASE` in `interleave.sh`). They used to overwrite one another, leaving only the last cycle (#71).
