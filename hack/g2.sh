@@ -17,6 +17,8 @@
 #   pairs     per-pair cap probe (#53): PAIR_ARMS (G<g>P<ids> arms, bench/paths/interleave.sh)
 #             interleaved over PAIR_CYCLES on T2-256
 #   pairslots PAIRSLOT_ARMS at SLOTCMP_SLOTS, alternated per cycle, proxies restarted per level
+#   pairbind  NUMA binding with RDMA (#86): PAIRBIND_ARMS on T2-256 with adit-proxy unbound, bound to
+#             node 0 (numactl), and bound with NIXL allowed both rails; modes alternated per cycle
 #   sweep     at E<N>: chunk 4/16 MiB and slots SWEEP_SLOTS, one T2 read each (restarts the proxies)
 #   t1        T1 at E<N>, striped and spread over all GPUs, 3 runs
 #   bsweep    path B tuning grid on T2-64 (threads x task size x objects in flight), all GPUs
@@ -85,9 +87,10 @@ REPO=/opt/adit-src/adit
 start_proxies() {
     # The proxy's S3 client opens a connection per in-flight request: at 2,048 slots and a 600 Gb/s
     # CRT target that exceeds the default 1,024 open files (AWS_ERROR_MAX_FDS_EXCEEDED -> 502, #48).
-    local args=$1 tag=$2
+    # wrap (optional): words between `env RUST_LOG=warn` and adit-proxy, e.g. VAR=x or numactl ....
+    local args=$1 tag=$2 wrap=${3-}
     for k in "${!PROXIES[@]}"; do
-        on "${PROXIES[$k]}" "pkill -x adit-proxy; sleep 1; ulimit -n \$(ulimit -Hn); ulimit -n; bgrun -o /tmp/proxy-$tag.out env RUST_LOG=warn adit-proxy --listen 0.0.0.0:8480 --agent-name ${PROXIES[$k]} $args; sleep 3" >>"$OUT/run.log" &
+        on "${PROXIES[$k]}" "pkill -x adit-proxy; sleep 1; ulimit -n \$(ulimit -Hn); ulimit -n; bgrun -o /tmp/proxy-$tag.out env RUST_LOG=warn $wrap adit-proxy --listen 0.0.0.0:8480 --agent-name ${PROXIES[$k]} $args; sleep 3" >>"$OUT/run.log" &
     done
     wait
     # Read the configuration back from every running proxy, not the flag.
@@ -227,6 +230,38 @@ step_pairslots() {
     start_proxies "$PROXY_ARGS" base
 }
 
+step_pairbind() {
+    # Does the fetch-only NUMA binding gain (fetch-fpplace: node 0 CPUs and memory, 27-29% less CPU
+    # per GB) hold with RDMA writes? Modes, alternated per cycle, proxies restarted per mode:
+    #   unbound  adit-proxy as in every G2 run
+    #   bound    numactl --cpunodebind=0 --membind=0 (node of ens68/S3 and of rail rdmap83s0); NIXL
+    #            picks DRAM_SEG rails from the pool's NUMA node, so expect rail 0 only
+    #   bound2r  bound, with NIXL_LIBFABRIC_MAX_BW_PER_DRAM_SEG high enough to use both rails
+    # After each start: the pool's placement (numa_maps of adit-proxy) and NUMA balancing state.
+    local modes=(${PAIRBIND_MODES:-unbound bound bound2r}) c k m w p
+    for p in "${PROXIES[@]}"; do
+        on "$p" "command -v numactl >/dev/null || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq numactl >/dev/null 2>&1; numactl --hardware | head -3" | sed "s/^/$p: /" | tee -a "$OUT/run.log"
+    done
+    for c in $(seq 1 "${PAIR_CYCLES:-3}"); do
+        for k in "${!modes[@]}"; do
+            m=${modes[$(( (k + c - 1) % ${#modes[@]} ))]}
+            case $m in
+                unbound) w="" ;;
+                bound) w="numactl --cpunodebind=0 --membind=0" ;;
+                bound2r) w="NIXL_LIBFABRIC_MAX_BW_PER_DRAM_SEG=100000 numactl --cpunodebind=0 --membind=0" ;;
+                *) log "pairbind: unknown mode $m"; return 1 ;;
+            esac
+            log "pairbind: cycle $c, mode $m"
+            start_proxies "$PROXY_ARGS" "pb-$m" "$w"
+            for p in "${PROXIES[@]}"; do
+                on "$p" "sleep 15; pid=\$(pgrep -x adit-proxy); echo numa_balancing=\$(cat /proc/sys/kernel/numa_balancing) pid=\$pid; sudo cat /proc/\$pid/numa_maps | grep -oE 'N[0-9]+=[0-9]+' | awk -F'[N=]' '{n[\$2]+=\$3} END{for (k in n) printf \"numa_maps_node%s_pages=%d \", k, n[k]; print \"\"}'" | sed "s/^/c$c $m $p: /" | tee -a "$OUT/pairbind-placement.txt"
+            done
+            client_run "pairbind-c$c-$m" "PLAN=/tmp/t2-256-plan.jsonl PROXIES=$URLS ARMS=\"${PAIRBIND_ARMS:-G1P0 G2P0}\" CYCLES=1 CYCLE_BASE=$((c - 1)) DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY OUT=/tmp/g2-pairbind-$m.csv bash bench/paths/interleave.sh T2-256"
+        done
+    done
+    start_proxies "$PROXY_ARGS" base
+}
+
 step_ladder() {
     log "ladder: $ARMS x $CYCLES cycles on T2"
     client_run ladder "PLAN=/tmp/t2-plan.jsonl PROXIES=$URLS ARMS=\"$ARMS\" STRIPE=0 E_ARGS=\"$E_ARGS\" $common OUT=/tmp/g2-ladder.csv bash bench/paths/interleave.sh T2"
@@ -265,7 +300,7 @@ step_ceiling() {
 }
 
 step_collect() {
-    for f in confirm50 ladder csweep csweep-c128 csweep-c256 csweep-c512 slotcmp-s2048 slotcmp-s4096 sweep t1 ceiling bsweep pairs pairslots-s2048 pairslots-s4096; do
+    for f in confirm50 ladder csweep csweep-c128 csweep-c256 csweep-c512 slotcmp-s2048 slotcmp-s4096 sweep t1 ceiling bsweep pairs pairslots-s2048 pairslots-s4096 pairbind-unbound pairbind-bound pairbind-bound2r; do
         on "$CLIENT" "test -f /tmp/g2-$f.csv && cat /tmp/g2-$f.csv" >"$OUT/g2-$f.csv"
         on "$CLIENT" "test -f /tmp/g2-$f.order && cat /tmp/g2-$f.order" >"$OUT/g2-$f.order"
         # One drop_caches status line per cold rung (#70).

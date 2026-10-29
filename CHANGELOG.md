@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`hack/g2.sh` `pairbind` step** (#86): checks the NUMA binding with RDMA writes. `PAIRBIND_ARMS` run with `adit-proxy` unbound, bound to node 0 (`numactl`), and bound with NIXL allowed both rails; the modes alternate per cycle. After each start the step records the pool's placement and the NUMA-balancing state. `start_proxies` takes an optional wrapper.
 - **Placement-controlled fetch probe results** in `bench/results/fetch-fpplace.csv` (#86): the slot pool placed on node 0 or node 1 (`numactl --preferred`), each with NUMA balancing on and off, plus node-0 CPU and memory binding. 15 rows, 0 failed chunks, with the placement read back from `numa_maps`.
 - **Placement-controlled fetch arms** (#86). In `bench/paths/fetchprobe.sh`, `p<k>` runs the bench under `numactl --preferred=k`, so the slot pool lands on node k. Each arm reads its page placement back from `/proc/<pid>/numa_maps` once the transfer is under way.
 - **Mechanism probe results** in `bench/results/fetch-fpmech.csv` (#76, #86): NUMA balancing off, NUMA binding to node 0, and 64 event loops, on one c8gn.48xlarge. 15 rows, 0 failed chunks, with NUMA hint-fault and migration counts per arm.
