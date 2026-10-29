@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Placement-controlled fetch arms** (#86). In `bench/paths/fetchprobe.sh`, `p<k>` runs the bench under `numactl --preferred=k`, so the slot pool lands on node k. Each arm reads its page placement back from `/proc/<pid>/numa_maps` once the transfer is under way.
 - **Mechanism probe results** in `bench/results/fetch-fpmech.csv` (#76, #86): NUMA balancing off, NUMA binding to node 0, and 64 event loops, on one c8gn.48xlarge. 15 rows, 0 failed chunks, with NUMA hint-fault and migration counts per arm.
 - **Mechanism arms in `bench/paths/fetchprobe.sh`** (#76).
   - `n0` turns NUMA balancing off for the arm and restores it after.
