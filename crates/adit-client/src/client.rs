@@ -47,7 +47,11 @@ pub struct Report {
     pub bytes: u64,
     pub s3_requests: u64,
     pub stripes: usize,
+    /// Request start to completion: every byte covered by notifications.
     pub elapsed: Duration,
+    /// Request start to the last proxy's HTTP answer (its writes complete on the proxy side).
+    /// `elapsed - answered` is the completion lever: notifications arriving after the answers.
+    pub answered: Duration,
 }
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
@@ -304,6 +308,7 @@ impl Client {
             self.one(d, self.agent_for(dest), proxy, path, url, s.clone(), dest_offset + (s.start - range.start), req)
         });
         let answers = futures::future::join_all(futs).await;
+        let answered = start.elapsed();
         let all_ok = answers.iter().all(|a| a.ok);
         self.tracker.wait(req, within.clone(), Instant::now() + self.cfg.notif_grace).await;
         let (cov, overlap) = self.tracker.close(req);
@@ -322,6 +327,7 @@ impl Client {
                 s3_requests: answers.iter().map(|a| a.s3_requests).sum(),
                 stripes: stripes.len(),
                 elapsed: start.elapsed(),
+                answered,
             });
         }
         Err(GetError::Partial {

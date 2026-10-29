@@ -72,6 +72,27 @@ impl Transfer {
     }
 }
 
+/// Counts a held slot in [`Metrics::slots_in_use`] and its hold time in
+/// [`Metrics::slot_hold_ns`]; dropped with the chunk's future, alongside the slot, on every path.
+struct Held<'a> {
+    m: &'a Metrics,
+    since: Instant,
+}
+
+impl<'a> Held<'a> {
+    fn new(m: &'a Metrics, since: Instant) -> Self {
+        m.slots_in_use.fetch_add(1, Relaxed);
+        Self { m, since }
+    }
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        self.m.slot_hold_ns.fetch_add(self.since.elapsed().as_nanos() as u64, Relaxed);
+        self.m.slots_in_use.fetch_sub(1, Relaxed);
+    }
+}
+
 pub async fn run<S: RangeSource + ?Sized, W: RemoteWriter + ?Sized>(
     t: &Transfer,
     src: &S,
@@ -104,6 +125,7 @@ pub async fn run_bounded<S: RangeSource + ?Sized, W: RemoteWriter + ?Sized>(
             let q = Instant::now();
             let mut slot = pool.acquire().await;
             let t0 = Instant::now();
+            let _held = Held::new(m, t0);
             m.h_slot_wait.observe(t0 - q);
             tm.slot_ns = ns(t0);
             let fetched = src.get_into(&t.url, c.range(), &mut slot[..len]).await;

@@ -226,3 +226,26 @@ async fn metrics_export_counters_and_config() {
         assert!(m.contains(&format!("adit_proxy_{h}_seconds_bucket{{le=\"+Inf\"}} 2")), "{h}: {m}");
     }
 }
+
+fn metric(text: &str, name: &str) -> u64 {
+    text.lines().find_map(|l| l.strip_prefix(name)?.trim().parse().ok()).unwrap_or_else(|| panic!("{name} missing"))
+}
+
+/// Slot occupancy (#86): the gauge is back to 0 once a transfer completes, on success and on
+/// failure, and the hold counter has summed time for every chunk held.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn slot_occupancy_is_released_and_hold_time_counted() {
+    let mut f = fixture(4 * MIB as usize).await;
+    let p = proxy(&f.lb, 1, 3).await;
+    f.register(&p).await;
+    let n = f.obj.len() as u64;
+    assert_eq!(f.get(&p, 0..n, 0, 11).await.status(), 200);
+    let m = f.http.get(format!("{p}/metrics")).send().await.unwrap().text().await.unwrap();
+    assert_eq!(metric(&m, "adit_proxy_slots_in_use "), 0);
+    assert!(metric(&m, "adit_proxy_slot_hold_ns_total ") > 0);
+    f.drain(11);
+    f.s3.poison(MIB);
+    assert_eq!(f.get(&p, 0..n, 0, 12).await.status(), 502);
+    let m = f.http.get(format!("{p}/metrics")).send().await.unwrap().text().await.unwrap();
+    assert_eq!(metric(&m, "adit_proxy_slots_in_use "), 0);
+}

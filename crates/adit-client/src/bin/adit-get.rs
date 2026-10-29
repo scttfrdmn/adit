@@ -114,6 +114,24 @@ fn split(size: u64, part: u64, n: usize) -> Vec<Range<u64>> {
     (0..n as u64).map(|k| k * per..((k + 1) * per).min(size)).filter(|r| r.start < r.end).collect()
 }
 
+/// Completion lever and wave drain, for the notes: notification lag after the proxies' answers
+/// (mean, p99, max ms), and per wave its wall and the time from its median request completion to
+/// its last (the drain tail), with the tail's share of all wave time.
+fn completion_note(lag_ms: &mut [f64], wave_ms: &[f64], tail_ms: &[f64]) -> String {
+    lag_ms.sort_by(f64::total_cmp);
+    let pick = |q: f64| lag_ms.get(((lag_ms.len() as f64 - 1.0) * q).round() as usize).copied().unwrap_or(f64::NAN);
+    let mean = lag_ms.iter().sum::<f64>() / lag_ms.len().max(1) as f64;
+    let share = tail_ms.iter().sum::<f64>() / wave_ms.iter().sum::<f64>().max(f64::MIN_POSITIVE);
+    let join = |v: &[f64]| v.iter().map(|x| format!("{x:.0}")).collect::<Vec<_>>().join("/");
+    format!(
+        "notif_lag_ms mean={mean:.2} p99={:.2} max={:.2}; wave_ms={}; wave_tail_ms={}; wave_tail_share={share:.3}",
+        pick(0.99),
+        pick(1.0),
+        join(wave_ms),
+        join(tail_ms)
+    )
+}
+
 /// Pack the plan into waves over `ngpu` buffers of `cap` bytes each: per object, its segments
 /// (one whole piece on the least-filled GPU, or with `spread` one piece per GPU), each placed
 /// page-aligned. A wave closes when an object no longer fits.
@@ -260,6 +278,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (mut bad, mut partial, mut notes) = (0usize, 0usize, Vec::<String>::new());
         let mut perf_note = String::new();
         let mut rails: BTreeMap<String, u64> = BTreeMap::new();
+        // Completion lever (#86): per request, proxy answers to full notification coverage; per
+        // wave, its wall and the spread of request completions within it (the drain tail).
+        let (mut lag_ms, mut wave_ms, mut tail_ms) = (Vec::<f64>::new(), Vec::<f64>::new(), Vec::<f64>::new());
         for wave in &waves {
             for (g, b) in gpus.iter().zip(bufs.iter_mut()) {
                 g.zero(b)?;
@@ -271,13 +292,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let (p, client) = (&plan[i], &client);
                 async move {
                     let path = format!("{}/{}", p.m.bucket, p.m.key);
-                    (w, client.get_into(sg.gpu, &path, &p.url, sg.range.clone(), sg.off).await)
+                    let r = client.get_into(sg.gpu, &path, &p.url, sg.range.clone(), sg.off).await;
+                    (w, r, t0.elapsed())
                 }
             }))
             .buffer_unordered(a.concurrency)
             .collect()
             .await;
-            wall += t0.elapsed();
+            let ww = t0.elapsed();
+            wall += ww;
+            wave_ms.push(ww.as_secs_f64() * 1e3);
+            let mut done: Vec<f64> = results.iter().map(|(_, _, d)| d.as_secs_f64() * 1e3).collect();
+            done.sort_by(f64::total_cmp);
+            if let (Some(&last), Some(&mid)) = (done.last(), done.get(done.len() / 2)) {
+                tail_ms.push(last - mid);
+            }
+            lag_ms.extend(
+                results
+                    .iter()
+                    .filter_map(|(_, r, _)| r.as_ref().ok())
+                    .map(|rep| rep.elapsed.saturating_sub(rep.answered).as_secs_f64() * 1e3),
+            );
             let m = win.stop();
             host_cpu += m.host_cpu_s.unwrap_or(f64::NAN);
             host_ticks += m.host_cpu_ticks_s.unwrap_or(f64::NAN);
@@ -298,7 +333,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // An object is delivered when every one of its segments is.
             let mut failed = vec![None::<String>; wave.len()];
             let mut reqs = vec![0u64; wave.len()];
-            for (w, r) in results {
+            for (w, r, _) in results {
                 match r {
                     Ok(rep) => reqs[w] += rep.s3_requests,
                     Err(e) => failed[w] = Some(e.to_string()),
@@ -356,6 +391,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         notes
             .push(format!("placement={placement} nic_placed_bytes={}", placed.map_or("n/a".into(), |p| p.to_string())));
         notes.push(format!("host_cpu_ticks_s={host_ticks:.2}"));
+        notes.push(completion_note(&mut lag_ms, &wave_ms, &tail_ms));
         if !rails.is_empty() {
             notes.push(format!("rails={}", adit_client::counters::rails_note(&rails)));
         }
@@ -442,6 +478,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completion_note_reports_lag_and_drain_tail() {
+        let mut lag = vec![3.0, 1.0, 2.0, 10.0];
+        let n = completion_note(&mut lag, &[100.0, 300.0], &[20.0, 80.0]);
+        assert!(n.contains("notif_lag_ms mean=4.00 p99=10.00 max=10.00"), "{n}");
+        assert!(n.contains("wave_ms=100/300; wave_tail_ms=20/80; wave_tail_share=0.250"), "{n}");
+    }
 
     fn entry(key: &str, size: u64, part: u64) -> PlanEntry {
         let m = serde_json::json!({"bucket": "b", "key": key, "size": size, "part_size": part,
