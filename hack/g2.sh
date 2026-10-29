@@ -254,7 +254,7 @@ step_pairbind() {
             log "pairbind: cycle $c, mode $m"
             start_proxies "$PROXY_ARGS" "pb-$m" "$w"
             for p in "${PROXIES[@]}"; do
-                on "$p" "sleep 15; pid=\$(pgrep -x adit-proxy); echo numa_balancing=\$(cat /proc/sys/kernel/numa_balancing) pid=\$pid; sudo cat /proc/\$pid/numa_maps | grep -oE 'N[0-9]+=[0-9]+' | awk -F'[N=]' '{n[\$2]+=\$3} END{for (k in n) printf \"numa_maps_node%s_pages=%d \", k, n[k]; print \"\"}'" | sed "s/^/c$c $m $p: /" | tee -a "$OUT/pairbind-placement.txt"
+                on "$p" "sleep 15; pid=\$(pgrep -x adit-proxy); echo numa_balancing=\$(cat /proc/sys/kernel/numa_balancing) pid=\$pid; sudo cat /proc/\$pid/numa_maps | grep -oE 'N[0-9]+=[0-9]+' | awk -F'[N=]' '{n[\$2]+=\$3} END{for (k in n) printf \"numa_maps_node%s_pages=%d \", k, n[k]; print \"\"}'; grep Cpus_allowed_list /proc/\$pid/status; sudo tr '\\0' '\\n' </proc/\$pid/environ | grep -E '^NIXL_' || echo 'no NIXL_ env'" | sed "s/^/c$c $m $p: /" | tee -a "$OUT/pairbind-placement.txt"
             done
             client_run "pairbind-c$c-$m" "PLAN=/tmp/t2-256-plan.jsonl PROXIES=$URLS ARMS=\"${PAIRBIND_ARMS:-G1P0 G2P0}\" CYCLES=1 CYCLE_BASE=$((c - 1)) DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY OUT=/tmp/g2-pairbind-$m.csv bash bench/paths/interleave.sh T2-256"
         done
