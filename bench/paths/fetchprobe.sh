@@ -93,7 +93,15 @@ arm() {
     adit-fetch-bench --plan "$PLAN" --slots "$slots" --objects-inflight "$objs" --chunk-mib 8 \
         --throughput-gbps "$tgt" "${extra[@]}" --region "$REGION" --runs 1 --label "$a${perf:+-perf}" \
         --chunk-log "$SNAP/c$c-$a-chunks.csv" 2>"$SNAP/c$c-$a.stderr" >"$SNAP/c$c-$a.out" &
-    local pid=$! st t
+    local pid=$! st t w=0
+    # The bench first allocates and zeroes its slot pool (32 GiB at 4096 x 8 MiB: several seconds of
+    # one core in the kernel) before any S3 traffic; readback and profile wait for its first S3
+    # socket (fetch-CPU probe 2026-10-29: both had sampled the allocation).
+    while (( w < 600 )) && ! sudo ss -tnpH state established | grep -q "pid=$pid,"; do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.1; w=$((w + 1))
+    done
+    echo "# first S3 socket after $((w / 10)).$((w % 10)) s" >>"$SNAP/c$c-$a-readback.txt"
     if [[ -n $perf ]]; then
         sudo perf record -F 99 -g -p "$pid" -o "$SNAP/$a.perf.data" -- sleep "${PERF_S:-5}" >/dev/null 2>&1
     else
