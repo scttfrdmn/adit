@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Fetch-CPU probe arms in `bench/paths/fetchprobe.sh` (#76, #79).**
+  - `e<n>` sets the CRT's event-loop threads; `h` fetches over plain HTTP, as a TLS A/B.
+  - The readback now counts the bench process's own sockets (`ss -p` filtered by its pid) per local address and port, at several points in the arm. It also records threads by name and per-thread CPU (`pidstat -t`).
+  - `PROFILE_ARMS` reruns arms under `perf record -g` after the cycles. Those rows are labelled `-perf` and are not comparison rows.
+  - `hack/fetchprobe.sh` installs perf and sysstat on the box.
 - **Second-interface fetch probe results** in `bench/results/fetch-fp2nic.csv`: one c8gn.48xlarge with an IP on both network cards, `adit-fetch-bench` binding S3 to one interface or both (PR #77 branch). 15 rows, 0 failed chunks. Both interfaces carried traffic, but there was no lift.
 - **Second-interface arms in `bench/paths/fetchprobe.sh`** (#53).
   - `i<n>` binds the CRT to the first n of `NET_IFACES`. `NET_IFACES` defaults to the box's ENA interfaces, with the default-route interface first.

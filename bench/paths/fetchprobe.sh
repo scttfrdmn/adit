@@ -10,11 +10,15 @@
 #
 #   PLAN=/tmp/t2-256-plan.jsonl CYCLES=3 ARMS="s2048o64 s4096o64" OUT=/tmp/fp.csv bash bench/paths/fetchprobe.sh T2-256
 #
-# Arm s<slots>o<objects in flight>[c<max connections>][t<CRT target Gb/s>][i<n>]; target default 600
+# Arm s<slots>o<objects in flight>[c<max connections>][t<CRT target Gb/s>][e<event-loop threads>][h]
+# [i<n>]; h fetches over plain HTTP (--scheme http: TLS A/B, #76); target default 600
 # (adit-proxy's G2 setting), max connections default unset (CRT chooses); i<n> binds the CRT's S3
 # connections to the first n interfaces of NET_IFACES (comma-separated; second-interface probe,
-# #53), unset uses the default route. Mid-run, each arm records the established sockets to port
-# 443 per local address and the bench's thread count (the CRT's own sizing, read back).
+# #53), unset uses the default route. Mid-run (READBACK_AT seconds into the arm), each arm records
+# the bench process's own established TCP sockets per local address (ss -p, filtered by pid: the
+# CRT's real connection count, #79), its threads by name (CRT event loops vs tokio) and per-thread
+# CPU (pidstat -t). PROFILE_ARMS run once more after the cycles under perf record (call graphs;
+# their rows are labelled <arm>-perf and are perturbed by the profiler, not comparison rows).
 P=F
 source "$(dirname "$0")/lib/common.sh"
 PLAN=${PLAN:?plan JSONL with presigned urls}
@@ -70,12 +74,14 @@ fi
 log "NET_IFACES=$NET_IFACES"
 topology | tee "$SNAP/topology.txt"
 arm() {
-    local a=$1 c=$2 slots objs conn="" tgt=600 extra=()
+    local a=$1 c=$2 perf=${3-} slots objs conn="" tgt=600 extra=()
     slots=$(sed -E 's/^s([0-9]+).*/\1/' <<<"$a")
     objs=$(sed -E 's/^s[0-9]+o([0-9]+).*/\1/' <<<"$a")
     [[ $a =~ c([0-9]+) ]] && conn=${BASH_REMATCH[1]}
     [[ $a =~ t([0-9]+) ]] && tgt=${BASH_REMATCH[1]}
-    [[ -n $conn ]] && extra=(--max-connections "$conn")
+    [[ $a =~ e([0-9]+) ]] && extra+=(--event-loop-threads "${BASH_REMATCH[1]}")
+    [[ ${a%-perf} =~ h$|h(i[0-9]) ]] && extra+=(--scheme http)
+    [[ -n $conn ]] && extra+=(--max-connections "$conn")
     if [[ $a =~ i([0-9]+) ]]; then
         local nif ifs
         nif=${BASH_REMATCH[1]}
@@ -85,24 +91,33 @@ arm() {
     cold
     counters >"$SNAP/c$c-$a-pre.txt"
     adit-fetch-bench --plan "$PLAN" --slots "$slots" --objects-inflight "$objs" --chunk-mib 8 \
-        --throughput-gbps "$tgt" "${extra[@]}" --region "$REGION" --runs 1 --label "$a" \
+        --throughput-gbps "$tgt" "${extra[@]}" --region "$REGION" --runs 1 --label "$a${perf:+-perf}" \
         --chunk-log "$SNAP/c$c-$a-chunks.csv" 2>"$SNAP/c$c-$a.stderr" >"$SNAP/c$c-$a.out" &
-    local pid=$! st
-    # Readback 3 s in: S3 sockets per local address and the process's thread count.
-    sleep "${READBACK_S:-3}"
-    {
-        echo "threads $(ls /proc/$pid/task 2>/dev/null | wc -l)"
-        ss -tnH state established '( dport = :443 )' | awk '{split($3,l,":"); n[l[1]]++} END{for (k in n) print "sockets", k, n[k]}'
-        ip -br -4 addr
-    } >"$SNAP/c$c-$a-readback.txt"
+    local pid=$! st t
+    if [[ -n $perf ]]; then
+        sudo perf record -F 99 -g -p "$pid" -o "$SNAP/$a.perf.data" -- sleep "${PERF_S:-5}" >/dev/null 2>&1
+    else
+        # Readback at READBACK_AT seconds (#79): this process's sockets (ss -p matches its pid),
+        # per local address and remote port; threads by name; per-thread CPU over 2 s.
+        for t in ${READBACK_AT:-2 5}; do
+            sleep "$(( t - ${last:-0} ))"; last=$t
+            {
+                echo "# t=${t}s"
+                sudo ss -tnpH state established | grep "pid=$pid," | awk '{n=split($3,l,":"); p=split($4,r,":"); k[l[1]" :"r[p]]++} END{for (x in k) print "sockets", x, k[x]}'
+                ps -L -o comm= -p "$pid" | sed -E 's/[0-9]+$//' | sort | uniq -c | sed 's/^/threads /'
+            } >>"$SNAP/c$c-$a-readback.txt"
+        done
+        unset last
+        pidstat -t -u -p "$pid" 1 2 2>/dev/null | awk '/Average:/ && $0 !~ /TGID/' >"$SNAP/c$c-$a-pidstat.txt"
+    fi
     wait "$pid"
     st=$?
     counters >"$SNAP/c$c-$a-post.txt"
     [[ -s $OUT ]] || grep '^label,' "$SNAP/c$c-$a.out" | head -1 >"$OUT"
-    grep -v '^label,' "$SNAP/c$c-$a.out" | grep "^$a," | tail -1 | tee -a "$OUT"
+    grep -v '^label,' "$SNAP/c$c-$a.out" | grep "^$a${perf:+-perf}," | tail -1 | tee -a "$OUT"
     (( st == 0 )) || log "arm $a cycle $c: adit-fetch-bench exit $st"
     local failed
-    failed=$(grep "^$a," "$SNAP/c$c-$a.out" | tail -1 | awk -F, '{print $16}')
+    failed=$(grep "^$a${perf:+-perf}," "$SNAP/c$c-$a.out" | tail -1 | awk -F, '{print $16}')
     [[ ${failed:-0} == 0 ]] || log "WARNING: arm $a cycle $c: $failed chunks failed" >&2
     gzip -f "$SNAP/c$c-$a-chunks.csv"
 }
@@ -112,5 +127,12 @@ for c in $(seq 1 "$CYCLES"); do
         printf '%s cycle=%s arm=%s ' "$(date -u +%T)" "$c" "$a" | tee -a "${OUT%.csv}.order"
         arm "$a" "$c" | cut -d, -f11,12,13,14,15,16 | tee -a "${OUT%.csv}.order"
     done
+done
+for a in ${PROFILE_ARMS-}; do
+    printf '%s cycle=P arm=%s-perf ' "$(date -u +%T)" "$a" | tee -a "${OUT%.csv}.order"
+    arm "$a" P perf | cut -d, -f11,12,13,14,15,16 | tee -a "${OUT%.csv}.order"
+    sudo perf report -i "$SNAP/$a.perf.data" --stdio --no-children --sort dso,symbol --percent-limit 0.5 2>/dev/null | head -120 >"$SNAP/$a.perf-top.txt"
+    sudo perf report -i "$SNAP/$a.perf.data" --stdio --no-children --sort comm --percent-limit 0.5 2>/dev/null | head -40 >"$SNAP/$a.perf-comm.txt"
+    sudo rm -f "$SNAP/$a.perf.data"
 done
 log "done: $OUT (order: ${OUT%.csv}.order, snapshots: $SNAP)"
