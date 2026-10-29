@@ -55,6 +55,11 @@ pub struct Metrics {
     pub fetch_ns: AtomicU64,
     pub write_ns: AtomicU64,
     pub first_byte_ns: AtomicU64,
+    /// Summed per-chunk slot hold (acquire to release, through write completion): divided by
+    /// wall time it is the mean slot occupancy (#86: Little's law needs the measured occupancy).
+    pub slot_hold_ns: AtomicU64,
+    /// Slots held now (gauge), for sampling occupancy over time.
+    pub slots_in_use: AtomicU64,
     /// Per chunk: waiting for a free slot, the ranged GET, waiting for a write permit, the write.
     pub h_slot_wait: Hist,
     pub h_fetch: Hist,
@@ -101,6 +106,17 @@ impl Metrics {
         c(&mut o, "fetch_ns_total", "Summed per-chunk fetch time.", self.fetch_ns.load(Relaxed));
         c(&mut o, "write_ns_total", "Summed per-chunk write time.", self.write_ns.load(Relaxed));
         c(&mut o, "first_byte_ns_total", "Summed per-chunk S3 first-byte latency.", self.first_byte_ns.load(Relaxed));
+        c(
+            &mut o,
+            "slot_hold_ns_total",
+            "Summed per-chunk slot hold, acquire to release.",
+            self.slot_hold_ns.load(Relaxed),
+        );
+        let _ = writeln!(
+            o,
+            "# HELP adit_proxy_slots_in_use Receive slots held now.\n# TYPE adit_proxy_slots_in_use gauge\nadit_proxy_slots_in_use {}",
+            self.slots_in_use.load(Relaxed)
+        );
         self.h_slot_wait.render(&mut o, "chunk_slot_wait", "Per chunk: time waiting for a free receive slot.");
         self.h_fetch.render(&mut o, "chunk_fetch", "Per chunk: ranged GET, issue to last body byte.");
         self.h_write_wait.render(&mut o, "chunk_write_wait", "Per chunk: time waiting for a write permit.");
