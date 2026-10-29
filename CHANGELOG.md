@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Occupancy sampler and binding readback** (#86). `bench/paths/interleave.sh` samples every proxy's `adit_proxy_slots_in_use` every `OCC_EVERY` seconds (default 0.5) while a G arm runs, into `<arm>-occupancy.txt`. The `pairbind` step also reads back the running proxy's `Cpus_allowed_list` and its `NIXL_*` environment.
 - **G2 pairbind results** in `bench/results/paths-g2pb.csv` (#86): `adit-proxy` unbound, bound to node 0, and bound with the NIXL rail override, each with RDMA writes into one and two H200s. 18 rows, all oracle ok, with proxy CPU per GB, per-rail write bytes and the pool's NUMA placement.
 - **`hack/g2.sh` `pairbind` step** (#86): checks the NUMA binding with RDMA writes. `PAIRBIND_ARMS` run with `adit-proxy` unbound, bound to node 0 (`numactl`), and bound with NIXL allowed both rails; the modes alternate per cycle. After each start the step records the pool's placement and the NUMA-balancing state. `start_proxies` takes an optional wrapper.
 - **Placement-controlled fetch probe results** in `bench/results/fetch-fpplace.csv` (#86): the slot pool placed on node 0 or node 1 (`numactl --preferred`), each with NUMA balancing on and off, plus node-0 CPU and memory binding. 15 rows, 0 failed chunks, with the placement read back from `numa_maps`.

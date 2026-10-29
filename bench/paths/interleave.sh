@@ -74,6 +74,21 @@ gpu_wait() {
     (( w > 0 )) && log "arm $a cycle $c: waited ${w}s for the previous adit-get to release the GPUs"
     return 0
 }
+# Slot occupancy sampler (#86): every OCC_EVERY s (default 0.5) while adit-get runs, each proxy's
+# adit_proxy_slots_in_use gauge, as `t_ms proxy-<i> slots` lines in the arm's -occupancy.txt.
+occupancy() {
+    local out=$1 gpid=$2 p i t0
+    shift 2
+    t0=$(date +%s%3N)
+    while kill -0 "$gpid" 2>/dev/null; do
+        i=0
+        for p in "$@"; do
+            echo "$(( $(date +%s%3N) - t0 )) proxy-$i $(curl -s -m 2 "${p#*=}/metrics" | awk '$1=="adit_proxy_slots_in_use"{print $2}')"
+            i=$((i + 1))
+        done
+        sleep "${OCC_EVERY:-0.5}"
+    done >"$out"
+}
 arm() {
     local a=$1 c=$(( $2 + ${CYCLE_BASE:-0} ))
     cold
@@ -127,7 +142,11 @@ arm() {
                 --agent-per-gpu "${pin[@]}" --nixl-progress-delay-us "$delay" \
                 --buffer-gib "$buf" --chunk-mib "$CHUNK_MIB" --concurrency "$E_CONCURRENCY" --runs 1 \
                 --meta path=E --meta "workload=$WORKLOAD" --meta "cold=$COLD" \
-                --meta "client_instance=$CLIENT_INSTANCE" --meta "commit=$COMMIT" --out "$OUT" 2>"$SNAP/c$c-$a.stderr" | grep -E '^E,' | tail -1
+                --meta "client_instance=$CLIENT_INSTANCE" --meta "commit=$COMMIT" --out "$OUT" 2>"$SNAP/c$c-$a.stderr" | grep -E '^E,' | tail -1 &
+            local gp=$!
+            occupancy "$SNAP/c$c-$a-occupancy.txt" "$gp" "${lab[@]}" &
+            wait "$gp"
+            wait
             snap "c$c-$a-post" "${lab[@]}"
             gpu_wait "$a" "$c" ;;
         *) log "unknown arm $a"; return 1 ;;
