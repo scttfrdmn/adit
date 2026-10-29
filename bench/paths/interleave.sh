@@ -74,7 +74,7 @@ gpu_wait() {
     (( w > 0 )) && log "arm $a cycle $c: waited ${w}s for the previous adit-get to release the GPUs"
     return 0
 }
-# Slot occupancy sampler (#86): every OCC_EVERY s (default 0.5) while adit-get runs, each proxy's
+# Slot occupancy sampler (#86): every OCC_EVERY s (default 0.5) while adit-get runs (E and G arms), each proxy's
 # adit_proxy_slots_in_use gauge, as `t_ms proxy-<i> slots` lines in the arm's -occupancy.txt.
 occupancy() {
     local out=$1 gpid=$2 p i t0
@@ -117,7 +117,11 @@ arm() {
             adit-get --proxies "$px" "${st[@]}" --plan "$PLAN" --agent-name "il-$a-$c-$$" --devices "$devs" \
                 --buffer-gib "$BUF_GIB" --chunk-mib "$CHUNK_MIB" --concurrency "$E_CONCURRENCY" --runs 1 $E_ARGS \
                 --meta path=E --meta "workload=$WORKLOAD" --meta "cold=$COLD" \
-                --meta "client_instance=$CLIENT_INSTANCE" --meta "commit=$COMMIT" --out "$OUT" 2>"$SNAP/c$c-$a.stderr" | grep -E '^E,' | tail -1
+                --meta "client_instance=$CLIENT_INSTANCE" --meta "commit=$COMMIT" --out "$OUT" 2>"$SNAP/c$c-$a.stderr" | grep -E '^E,' | tail -1 &
+            local ep=$!
+            occupancy "$SNAP/c$c-$a-occupancy.txt" "$ep" "${PX[@]:0:k}" &
+            wait "$ep"
+            wait
             snap "c$c-$a-post" "${PX[@]:0:k}"
             gpu_wait "$a" "$c" ;;
         G[0-9]*P[0-9]*)
