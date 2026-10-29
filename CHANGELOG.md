@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Second-interface fetch probe results** in `bench/results/fetch-fp2nic.csv`: one c8gn.48xlarge with an IP on both network cards, `adit-fetch-bench` binding S3 to one interface or both (PR #77 branch). 15 rows, 0 failed chunks. Both interfaces carried traffic, but there was no lift.
 - **Second-interface arms in `bench/paths/fetchprobe.sh`** (#53).
   - `i<n>` binds the CRT to the first n of `NET_IFACES`. `NET_IFACES` defaults to the box's ENA interfaces, with the default-route interface first.
   - Each arm reads back, mid-run, the established S3 sockets per local address and the bench's thread count.
