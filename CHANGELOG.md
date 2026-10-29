@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Fetch-CPU probe results** in `bench/results/fetch-fpcpu.csv` (#76, #79): event-loop sweep (8/32/64/96/default) and an HTTP A/B on one c8gn.48xlarge, 26 rows, 0 failed chunks. They include the CRT connection count (about 1,500) and event-loop thread counts read back from the running bench.
 - **Fetch-CPU probe arms in `bench/paths/fetchprobe.sh` (#76, #79).**
   - `e<n>` sets the CRT's event-loop threads; `h` fetches over plain HTTP, as a TLS A/B.
   - The readback now counts the bench process's own sockets (`ss -p` filtered by its pid) per local address and port, at several points in the arm. It also records threads by name and per-thread CPU (`pidstat -t`).
