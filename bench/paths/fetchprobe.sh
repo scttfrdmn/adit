@@ -17,8 +17,11 @@
 # #53), unset uses the default route.
 # Once a second for the whole arm, a sampler records the bench's socket fds (the CRT's connection
 # count, #79), its threads by name (CRT event loops vs tokio) and per-thread CPU (pidstat -t).
-# PROFILE_ARMS run once more after the cycles, the whole bench under perf record -g (rows labelled
-# <arm>-perf, perturbed by the profiler, not comparison rows).
+# PROFILE_ARMS run once more after the cycles, the whole bench under perf record -g as the login
+# user (rows labelled <arm>-perf, perturbed by the profiler, not comparison rows; under sudo the
+# bench lost root's open-files limit and failed chunks).
+# Mechanism tokens (#76): n0 turns automatic NUMA balancing off for the arm (kernel.numa_balancing,
+# restored after); b<k> runs the bench under numactl --cpunodebind=k --membind=k.
 P=F
 source "$(dirname "$0")/lib/common.sh"
 PLAN=${PLAN:?plan JSONL with presigned urls}
@@ -81,6 +84,12 @@ arm() {
     [[ $a =~ t([0-9]+) ]] && tgt=${BASH_REMATCH[1]}
     [[ $a =~ e([0-9]+) ]] && extra+=(--event-loop-threads "${BASH_REMATCH[1]}")
     [[ ${a%-perf} =~ h$|h(i[0-9]) ]] && extra+=(--scheme http)
+    local nb_was="" bind=()
+    if [[ $a =~ n0 ]]; then
+        nb_was=$(cat /proc/sys/kernel/numa_balancing)
+        sudo sysctl -qw kernel.numa_balancing=0
+    fi
+    [[ $a =~ b([0-9]+) ]] && bind=(numactl --cpunodebind="${BASH_REMATCH[1]}" --membind="${BASH_REMATCH[1]}")
     [[ -n $conn ]] && extra+=(--max-connections "$conn")
     if [[ $a =~ i([0-9]+) ]]; then
         local nif ifs
@@ -90,11 +99,13 @@ arm() {
     fi
     cold
     counters >"$SNAP/c$c-$a-pre.txt"
+    grep -E '^numa_(hint_faults|pages_migrated|hint_faults_local)' /proc/vmstat >"$SNAP/c$c-$a-vmstat-pre.txt"
     local pre=() st
     # Profiled arms run the whole bench under perf (call graphs). The first seconds are the slot
     # pool's allocation (kernel clear_page); perf-top separates it by symbol.
-    [[ -n $perf ]] && pre=(sudo perf record -F 99 -g -o "$SNAP/$a.perf.data" --)
-    "${pre[@]}" adit-fetch-bench --plan "$PLAN" --slots "$slots" --objects-inflight "$objs" --chunk-mib 8 \
+    [[ -n $perf ]] && pre=(perf record -F 99 -g -o "$SNAP/$a.perf.data" --)
+    echo "# numa_balancing=$(cat /proc/sys/kernel/numa_balancing) bind=${bind[*]:-none} open_files=$(ulimit -n)" >"$SNAP/c$c-$a-env.txt"
+    "${pre[@]}" "${bind[@]}" adit-fetch-bench --plan "$PLAN" --slots "$slots" --objects-inflight "$objs" --chunk-mib 8 \
         --throughput-gbps "$tgt" "${extra[@]}" --region "$REGION" --runs 1 --label "$a${perf:+-perf}" \
         --chunk-log "$SNAP/c$c-$a-chunks.csv" 2>"$SNAP/c$c-$a.stderr" >"$SNAP/c$c-$a.out" &
     local wpid=$! bpid="" i
@@ -112,6 +123,8 @@ arm() {
     fi
     wait "$wpid"
     st=$?
+    [[ -n $nb_was ]] && sudo sysctl -qw kernel.numa_balancing="$nb_was"
+    grep -E '^numa_(hint_faults|pages_migrated|hint_faults_local)' /proc/vmstat >>"$SNAP/c$c-$a-env.txt"
     counters >"$SNAP/c$c-$a-post.txt"
     [[ -s $OUT ]] || grep '^label,' "$SNAP/c$c-$a.out" | head -1 >"$OUT"
     grep -v '^label,' "$SNAP/c$c-$a.out" | grep "^$a${perf:+-perf}," | tail -1 | tee -a "$OUT"
@@ -128,11 +141,21 @@ for c in $(seq 1 "$CYCLES"); do
         arm "$a" "$c" | cut -d, -f11,12,13,14,15,16 | tee -a "${OUT%.csv}.order"
     done
 done
+# perf as the login user needs these; recorded and restored.
+if [[ -n ${PROFILE_ARMS-} ]]; then
+    pp_was=$(cat /proc/sys/kernel/perf_event_paranoid) kp_was=$(cat /proc/sys/kernel/kptr_restrict)
+    sudo sysctl -qw kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
+    log "perf: paranoid $pp_was -> -1, kptr_restrict $kp_was -> 0 (restored after)"
+fi
 for a in ${PROFILE_ARMS-}; do
     printf '%s cycle=P arm=%s-perf ' "$(date -u +%T)" "$a" | tee -a "${OUT%.csv}.order"
     arm "$a" P perf | cut -d, -f11,12,13,14,15,16 | tee -a "${OUT%.csv}.order"
-    sudo perf report -i "$SNAP/$a.perf.data" --stdio --no-children --sort dso,symbol --percent-limit 0.5 2>/dev/null | head -120 >"$SNAP/$a.perf-top.txt"
-    sudo perf report -i "$SNAP/$a.perf.data" --stdio --no-children --sort comm --percent-limit 0.5 2>/dev/null | head -40 >"$SNAP/$a.perf-comm.txt"
-    sudo rm -f "$SNAP/$a.perf.data"
+    # Flat symbol list (no call graphs, so it is not truncated by them), callers of the top symbols,
+    # and by thread name.
+    perf report -i "$SNAP/$a.perf.data" --stdio --no-children -g none --sort dso,symbol --percent-limit 0.2 2>/dev/null | grep -v '^$' | head -150 >"$SNAP/$a.perf-top.txt"
+    perf report -i "$SNAP/$a.perf.data" --stdio --no-children -g caller,0.5,callee --sort symbol --percent-limit 3 2>/dev/null | head -600 >"$SNAP/$a.perf-callers.txt"
+    perf report -i "$SNAP/$a.perf.data" --stdio --no-children -g none --sort comm --percent-limit 0.5 2>/dev/null | grep -v '^$' | head -40 >"$SNAP/$a.perf-comm.txt"
+    rm -f "$SNAP/$a.perf.data"
 done
+[[ -n ${PROFILE_ARMS-} ]] && sudo sysctl -qw kernel.perf_event_paranoid="$pp_was" kernel.kptr_restrict="$kp_was"
 log "done: $OUT (order: ${OUT%.csv}.order, snapshots: $SNAP)"

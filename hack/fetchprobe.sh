@@ -32,7 +32,7 @@ on "aws s3 cp --only-show-errors s3://$BUCKET/adit/bin/aditctl-linux-arm64 /tmp/
     aws s3 cp --only-show-errors s3://$BUCKET/adit/manifests/t2.jsonl /tmp/t2.jsonl --region $REGION && aditctl presign --region $REGION --manifest /tmp/t2.jsonl --out /tmp/t2-plan.jsonl --ttl 8h
     head -256 /tmp/t2-plan.jsonl >/tmp/t2-256-plan.jsonl; wc -l /tmp/t2-256-plan.jsonl; cat /var/lib/adit/versions" | tee -a "$OUT/run.log"
 # Profiling tools for the CPU probe (#76): perf for this kernel, pidstat (sysstat). Recorded.
-on "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sysstat linux-tools-\$(uname -r) >/dev/null 2>&1; echo perf=\$(perf --version 2>&1 | head -1) pidstat=\$(pidstat -V 2>&1 | head -1)" | tee -a "$OUT/run.log"
+on "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sysstat numactl linux-tools-\$(uname -r) >/dev/null 2>&1; echo perf=\$(perf --version 2>&1 | head -1) pidstat=\$(pidstat -V 2>&1 | head -1)" | tee -a "$OUT/run.log"
 # Clear the previous run's outputs on the box: fetchprobe.sh appends (the first fetch probe's rerun
 # inherited its predecessor's rows).
 on "rm -rf /tmp/fp.csv /tmp/fp.order /tmp/fp.cold /tmp/fp-snap /tmp/fp.out" >/dev/null

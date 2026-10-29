@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Mechanism arms in `bench/paths/fetchprobe.sh`** (#76).
+  - `n0` turns NUMA balancing off for the arm and restores it after.
+  - `b<k>` binds the bench to NUMA node k (`numactl`).
+  - Each arm records `numa_balancing`, the binding, open files and NUMA vmstat counters.
+  - Profiled arms run `perf` as the login user, with `perf_event_paranoid` and `kptr_restrict` relaxed and restored. Reports are a flat symbol list, the callers of the top symbols, and per thread.
+  - `hack/fetchprobe.sh` installs `numactl`.
 - **Fetch-CPU probe results** in `bench/results/fetch-fpcpu.csv` (#76, #79): event-loop sweep (8/32/64/96/default) and an HTTP A/B on one c8gn.48xlarge, 26 rows, 0 failed chunks. They include the CRT connection count (about 1,500) and event-loop thread counts read back from the running bench.
 - **Fetch-CPU probe arms in `bench/paths/fetchprobe.sh` (#76, #79).**
   - `e<n>` sets the CRT's event-loop threads; `h` fetches over plain HTTP, as a TLS A/B.
