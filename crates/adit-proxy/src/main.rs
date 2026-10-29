@@ -35,6 +35,10 @@ struct Args {
     /// Hard cap on CRT connections.
     #[arg(long)]
     max_connections: Option<u32>,
+    /// Bind S3 connections to these interfaces, comma-separated (multi-ENA boxes, #53); unset
+    /// means the default route.
+    #[arg(long, value_delimiter = ',')]
+    network_interfaces: Vec<String>,
     /// Attempts per ranged GET on 5xx/throttle/transport errors.
     #[arg(long, default_value_t = 4)]
     attempts: u32,
@@ -70,6 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let crt = CrtSource::new(&CrtConfig {
         throughput_target_gbps: a.throughput_gbps,
         max_connections: a.max_connections,
+        network_interfaces: a.network_interfaces.clone(),
         region: a.region.clone(),
         meta_type: a.meta_type,
         part_size: a.part_mib.map(|m| m << 20),
@@ -86,6 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             slots: a.slots as u64,
             throughput_target_gbps: a.throughput_gbps,
             max_connections: a.max_connections.unwrap_or(0) as u64,
+            network_interfaces: a.network_interfaces.join(","),
             write_inflight: a.write_inflight as u64,
             meta_type: format!("{:?}", a.meta_type),
             stub: false,

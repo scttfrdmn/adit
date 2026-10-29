@@ -72,6 +72,10 @@ struct Args {
     max_connections: Option<u32>,
     #[arg(long)]
     event_loop_threads: Option<u16>,
+    /// Bind S3 connections to these interfaces, comma-separated (multi-ENA boxes, #53); unset
+    /// means the default route.
+    #[arg(long, value_delimiter = ',')]
+    network_interfaces: Vec<String>,
     /// default | get-object
     #[arg(long, default_value = "default")]
     meta_type: MetaType,
@@ -134,10 +138,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             throughput_target_gbps: a.throughput_gbps,
             max_connections: a.max_connections,
             event_loop_threads: a.event_loop_threads,
+            network_interfaces: a.network_interfaces.clone(),
             region: a.region.clone(),
             meta_type: a.meta_type,
             part_size: a.part_mib.map(|m| m << 20),
-            ..CrtConfig::default()
         })?,
         4,
         Duration::from_millis(50),
