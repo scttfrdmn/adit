@@ -21,7 +21,10 @@
 # user (rows labelled <arm>-perf, perturbed by the profiler, not comparison rows; under sudo the
 # bench lost root's open-files limit and failed chunks).
 # Mechanism tokens (#76): n0 turns automatic NUMA balancing off for the arm (kernel.numa_balancing,
-# restored after); b<k> runs the bench under numactl --cpunodebind=k --membind=k.
+# restored after); b<k> runs the bench under numactl --cpunodebind=k --membind=k; p<k> under
+# numactl --preferred=k (the slot pool, zeroed at allocation by one thread, then lands on node k
+# instead of wherever that thread ran: the mechanism probe's confound). Each arm reads the bench's
+# page placement back from /proc/<pid>/numa_maps once its transfer is under way.
 P=F
 source "$(dirname "$0")/lib/common.sh"
 PLAN=${PLAN:?plan JSONL with presigned urls}
@@ -90,6 +93,7 @@ arm() {
         sudo sysctl -qw kernel.numa_balancing=0
     fi
     [[ $a =~ b([0-9]+) ]] && bind=(numactl --cpunodebind="${BASH_REMATCH[1]}" --membind="${BASH_REMATCH[1]}")
+    [[ $a =~ p([0-9]+) ]] && bind=(numactl --preferred="${BASH_REMATCH[1]}")
     [[ -n $conn ]] && extra+=(--max-connections "$conn")
     if [[ $a =~ i([0-9]+) ]]; then
         local nif ifs
@@ -115,7 +119,14 @@ arm() {
     if [[ -n $bpid ]]; then
         pidstat -t -u -p "$bpid" 1 >"$SNAP/c$c-$a-pidstat.txt" 2>/dev/null &
         local spid=$!
+        local placed=""
         while kill -0 "$bpid" 2>/dev/null; do
+            # Placement readback, once the transfer is under way (100+ sockets): pages per node over
+            # every mapping of the bench (numa_maps N<k>=pages).
+            if [[ -z $placed ]] && (( $(sudo ls -l /proc/$bpid/fd 2>/dev/null | grep -c 'socket:') > 100 )); then
+                sudo cat /proc/$bpid/numa_maps 2>/dev/null | grep -oE 'N[0-9]+=[0-9]+' | awk -F'[N=]' '{n[$2]+=$3} END{for (k in n) printf "numa_maps_node%s_pages=%d ", k, n[k]; print ""}' >>"$SNAP/c$c-$a-env.txt"
+                placed=1
+            fi
             echo "t=$(date -u +%T.%N | cut -c1-12) sockets=$(sudo ls -l /proc/$bpid/fd 2>/dev/null | grep -c 'socket:') $(ps -L -o comm= -p "$bpid" 2>/dev/null | sed -E 's/[0-9]+$//' | sort | uniq -c | awk '{printf "%s=%s ", $2, $1}')"
             sleep 1
         done >"$SNAP/c$c-$a-readback.txt"
