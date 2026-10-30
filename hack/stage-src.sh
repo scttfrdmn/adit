@@ -75,8 +75,18 @@ else
     done
     for d in "${keep[@]}"; do [[ -d $sp/$d ]] || fail "nixl subproject $d not cloned"; done
     for f in "${files[@]}"; do [[ -f $sp/packagecache/$f ]] || fail "nixl subproject archive $f not downloaded"; done
-    log "nixl subprojects: git ${keep[*]}; archives ${files[*]}"
-    rm -rf "$W/nixl/.git" && COPYFILE_DISABLE=1 tar czf "$W/nixl.tar.gz" -C "$W" nixl || fail "nixl tarball"
+    # nixlbench is its own meson project with no wraps: online it takes asio and tomlplusplus from
+    # WrapDB (latest); offline it gets NIXL's pinned wraps and archives for them.
+    nb=$W/nixl/benchmark/nixlbench/subprojects
+    mkdir -p "$nb/packagecache" || fail "nixlbench subprojects"
+    for w in asio tomlplusplus; do
+        cp "$sp/$w.wrap" "$nb/" || fail "nixlbench wrap $w"
+        for f in $(awk -F' *= *' '$1=="source_filename" || $1=="patch_filename"{print $2}' "$sp/$w.wrap"); do
+            cp "$sp/packagecache/$f" "$nb/packagecache/" || fail "nixlbench archive $f"
+        done
+    done
+    log "nixl subprojects: git ${keep[*]}; archives ${files[*]}; nixlbench asio tomlplusplus"
+    rm -rf "$W/nixl/.git" && COPYFILE_DISABLE=1 tar --no-xattrs -czf "$W/nixl.tar.gz" -C "$W" nixl || fail "nixl tarball"
     aws s3 cp --only-show-errors "$W/nixl.tar.gz" "$NDEST/nixl.tar.gz" || fail "upload nixl"
     log "nixl $nixl_ref staged: $(du -h "$W/nixl.tar.gz" | cut -f1) -> $NDEST"
 fi
@@ -90,9 +100,9 @@ git archive --format=tar --prefix=adit/ --add-virtual-file="adit/COMMIT:$sha" "$
 tar xzf "$W/adit.tar.gz" -C "$W" || fail "extract"
 # --versioned-dirs keeps two versions of one crate apart; the printed source-replacement config is
 # kept beside the tarball (install.sh rewrites its directory to the box's vendor path). macOS tar
-# would add AppleDouble files without COPYFILE_DISABLE.
+# would add AppleDouble files and xattr headers without COPYFILE_DISABLE and --no-xattrs.
 (cd "$W/adit" && cargo vendor --locked --versioned-dirs "$W/vendor" 2>/dev/null >"$W/cargo-config.toml") || fail "cargo vendor"
-COPYFILE_DISABLE=1 tar czf "$W/vendor.tar.gz" -C "$W" vendor || fail "vendor tarball"
+COPYFILE_DISABLE=1 tar --no-xattrs -czf "$W/vendor.tar.gz" -C "$W" vendor || fail "vendor tarball"
 for f in adit.tar.gz vendor.tar.gz cargo-config.toml; do
     aws s3 cp --only-show-errors "$W/$f" "$DEST/$f" || fail "upload $f"
 done
