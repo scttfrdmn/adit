@@ -13,7 +13,9 @@
 #
 # Offline (boxes with no internet route, `--no-public-ip`): ADIT_SRC_S3=s3://<bucket>/adit/src/<sha>,
 # staged by hack/stage-src.sh, builds adit from that source and its vendored crates (cargo
-# --frozen); every other stage must already be marked done in the AMI, or the script refuses.
+# --frozen), and NIXL, if its marker is missing, from s3://<bucket>/adit/src/nixl-<NIXL_REF>/ (meson
+# --wrap-mode=nodownload); every other stage must already be marked done in the AMI, or the script
+# refuses.
 set +e
 set -uo pipefail
 echo "opts=$-"
@@ -53,7 +55,7 @@ arch=$(uname -m)
 log "role=$ROLE arch=$arch nixl=$NIXL_TAG prefix=$NIXL_PREFIX"
 if [[ -n $ADIT_SRC_S3 ]]; then
     miss=()
-    for m in apt awscli efa absl grpc etcdcpp "nixl-$NIXL_REF" rust bgrun $([[ $ROLE == client ]] && echo pathtools); do
+    for m in apt awscli efa absl grpc etcdcpp rust bgrun $([[ $ROLE == client ]] && echo pathtools); do
         done_ "$m" || miss+=("$m")
     done
     (( ${#miss[@]} == 0 )) || fail "offline (ADIT_SRC_S3): the AMI lacks stages ${miss[*]}, which need the internet"
@@ -144,10 +146,17 @@ fi
 # The marker names the ref, so a box (or AMI) built at another NIXL rebuilds.
 if ! done_ "nixl-$NIXL_REF"; then
     cd "$SRC" && rm -rf nixl && mkdir nixl && cd nixl || fail nixl dir
-    git init -q && git remote add origin https://github.com/ai-dynamo/nixl.git &&
-        git fetch -q --depth 1 origin "$NIXL_REF" && git checkout -q FETCH_HEAD || fail nixl fetch
     opts=(-Dlibfabric_path=/opt/amazon/efa -Detcd_inc_path=/usr/local/include -Detcd_lib_path=/usr/local/lib
         -Dbuild_tests=false -Dbuild_examples=false --buildtype=release --prefix="$NIXL_PREFIX")
+    if [[ -n $ADIT_SRC_S3 ]]; then
+        # Staged with its meson subprojects already downloaded.
+        aws s3 cp --only-show-errors "${ADIT_SRC_S3%/*}/nixl-$NIXL_REF/nixl.tar.gz" /tmp/nixl.tar.gz --region "$ADIT_SRC_REGION" &&
+            tar xzf /tmp/nixl.tar.gz --strip-components=1 && rm -f /tmp/nixl.tar.gz || fail "nixl fetch (staged)"
+        opts+=(--wrap-mode=nodownload)
+    else
+        git init -q && git remote add origin https://github.com/ai-dynamo/nixl.git &&
+            git fetch -q --depth 1 origin "$NIXL_REF" && git checkout -q FETCH_HEAD || fail nixl fetch
+    fi
     [[ -n $CUDA ]] && opts+=(-Dcudapath_inc="$CUDA/include" -Dcudapath_lib="$CUDA/lib64")
     meson setup build "${opts[@]}" || fail nixl meson
     ninja -C build install || fail nixl build
@@ -157,6 +166,7 @@ if ! done_ "nixl-$NIXL_REF"; then
     ldconfig
     cd benchmark/nixlbench || fail nixlbench dir
     bopts=(-Dnixl_path="$NIXL_PREFIX" -Detcd_inc_path=/usr/local/include -Detcd_lib_path=/usr/local/lib --prefix="$NIXL_PREFIX")
+    [[ -n $ADIT_SRC_S3 ]] && bopts+=(--wrap-mode=nodownload)
     [[ -n $CUDA ]] && bopts+=(-Dcudapath_inc="$CUDA/include" -Dcudapath_lib="$CUDA/lib64")
     meson setup build "${bopts[@]}" || fail nixlbench meson
     ninja -C build install || fail nixlbench build
