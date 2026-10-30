@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`aditctl fleet up --no-public-ip`** passes spawn's `--no-public-ip` (spawn 0.151.0, spore-host/spawn#1433). Every box launches with private IPs only, so no Elastic IP is needed per multi-card EFA box, and spawn refuses a VPC that lacks the endpoints. `hack/g2-place.sh` gains `NO_PUBLIC_IP=1`, which passes the flag and skips the Elastic IP headroom checks.
 - **Slot occupancy and the completion lever** (#86, #76).
   - `adit-proxy` exposes `adit_proxy_slots_in_use` (gauge) and `adit_proxy_slot_hold_ns_total` (summed per-chunk hold from acquire to release, through write completion). Mean occupancy is then measured, not inferred from Little's law.
   - `adit-get` notes now carry the notification lag after the proxies' HTTP answers (`notif_lag_ms` mean, p99 and max) and, per wave, the wall time and drain tail (median to last request completion), plus the tail's share.

@@ -36,6 +36,19 @@ func TestLaunchArgsCarryTTLCostLimitPlacementAndEFA(t *testing.T) {
 	}
 }
 
+func TestLaunchArgsNoPublicIP(t *testing.T) {
+	r := Role{Name: "proxy", InstanceType: "c8gn.48xlarge", CostLimit: 25}
+	c := Candidate{Region: "us-east-1", AZ: "us-east-1a"}
+	off := strings.Join((&Spec{Name: "g2", TTL: "2h"}).LaunchArgs(r, 0, c, "subnet-1", "sg-1", "ami-1", "/tmp/id"), " ")
+	if strings.Contains(off, "--no-public-ip") {
+		t.Errorf("--no-public-ip without NoPublicIP: %s", off)
+	}
+	on := strings.Join((&Spec{Name: "g2", TTL: "2h", NoPublicIP: true}).LaunchArgs(r, 0, c, "subnet-1", "sg-1", "ami-1", "/tmp/id"), " ")
+	if !strings.Contains(on, "--no-public-ip") {
+		t.Errorf("NoPublicIP not passed: %s", on)
+	}
+}
+
 func TestCapacityErrorsAreRecognised(t *testing.T) {
 	if !isCapacity("api error InsufficientInstanceCapacity: We currently do not have sufficient g7e.12xlarge capacity") {
 		t.Fatal("capacity error not recognised")
