@@ -25,7 +25,15 @@ push() { AWS_PROFILE=${AWS_PROFILE-aws} aws s3 cp --recursive --quiet "$OUT" "s3
 trap push EXIT
 
 log "fetchprobe: box=$BOX ref=$ADIT_REF bucket=$BUCKET region=$REGION"
-ON_TIMEOUT=2400 on "cd $REPO && git fetch -q origin && git checkout -q $ADIT_REF && git reset -q --hard origin/$ADIT_REF && sudo ADIT_REF=$ADIT_REF bash hack/install.sh proxy 2>&1 | tail -15" >"$OUT/refresh.txt"
+# OFFLINE=1 (box with no internet route, --no-public-ip): build from source staged in the bucket.
+if [[ ${OFFLINE-} == 1 ]]; then
+    SRC_S3=$(BUCKET=$BUCKET REGION=$REGION bash hack/stage-src.sh "$ADIT_REF") || { log "stage-src failed; stopping"; exit 1; }
+    log "staged $SRC_S3"
+    refresh="rm -rf /tmp/adit-stage && mkdir -p /tmp/adit-stage && aws s3 cp --only-show-errors $SRC_S3/adit.tar.gz /tmp/adit-stage/ --region $REGION && tar xzf /tmp/adit-stage/adit.tar.gz -C /tmp/adit-stage adit/hack/install.sh && sudo ADIT_SRC_S3=$SRC_S3 ADIT_SRC_REGION=$REGION bash /tmp/adit-stage/adit/hack/install.sh proxy 2>&1 | tail -15"
+else
+    refresh="cd $REPO && git fetch -q origin && git checkout -q $ADIT_REF && git reset -q --hard origin/$ADIT_REF && sudo ADIT_REF=$ADIT_REF bash hack/install.sh proxy 2>&1 | tail -15"
+fi
+ON_TIMEOUT=2400 on "$refresh" >"$OUT/refresh.txt"
 log "refresh: $(grep -E '^adit=|install complete|FAIL' "$OUT/refresh.txt" | tr '\n' ' ')"
 grep -q 'install complete' "$OUT/refresh.txt" || { log "refresh failed; stopping"; exit 1; }
 on "aws s3 cp --only-show-errors s3://$BUCKET/adit/bin/aditctl-linux-arm64 /tmp/aditctl --region $REGION && sudo install /tmp/aditctl /usr/local/bin/aditctl

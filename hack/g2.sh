@@ -27,6 +27,9 @@
 #
 #   ADIT_SPAWN=... STEPS="refresh health start plans ladder" bash hack/g2.sh <fleet> [proxies=8]
 #
+# OFFLINE=1 for boxes with no internet route (launched --no-public-ip): refresh builds from source
+# staged in the bucket (hack/stage-src.sh) instead of GitHub.
+#
 # Results land in $OUT locally and under s3://$BUCKET/adit/g2/ after every step (logs streamed off
 # the instances, law 7).
 set +e
@@ -120,11 +123,26 @@ client_run() {
     push
 }
 
+# The on-box refresh command for a role. OFFLINE=1 (boxes with no internet route, --no-public-ip):
+# ADIT_REF is staged in the bucket (hack/stage-src.sh) and install.sh, from the staged tree, builds
+# from it; otherwise the box's checkout pulls ADIT_REF from GitHub.
+refresh_cmd() {
+    if [[ -n ${SRC_S3-} ]]; then
+        echo "rm -rf /tmp/adit-stage && mkdir -p /tmp/adit-stage && aws s3 cp --only-show-errors $SRC_S3/adit.tar.gz /tmp/adit-stage/ --region $REGION && tar xzf /tmp/adit-stage/adit.tar.gz -C /tmp/adit-stage adit/hack/install.sh && sudo ADIT_SRC_S3=$SRC_S3 ADIT_SRC_REGION=$REGION bash /tmp/adit-stage/adit/hack/install.sh $1 2>&1 | tail -15"
+    else
+        echo "cd $REPO && git fetch -q origin && git checkout -q $ADIT_REF && git reset -q --hard origin/$ADIT_REF && sudo ADIT_REF=$ADIT_REF bash hack/install.sh $1 2>&1 | tail -15"
+    fi
+}
+
 step_refresh() {
-    log "refresh: install.sh on every box at $ADIT_REF"
-    ON_TIMEOUT=2400 on "$CLIENT" "cd $REPO && git fetch -q origin && git checkout -q $ADIT_REF && git reset -q --hard origin/$ADIT_REF && sudo ADIT_REF=$ADIT_REF bash hack/install.sh client 2>&1 | tail -15" >"$OUT/refresh-client.txt" &
+    log "refresh: install.sh on every box at $ADIT_REF$([[ ${OFFLINE-} == 1 ]] && echo " (offline)")"
+    if [[ ${OFFLINE-} == 1 ]]; then
+        SRC_S3=$(BUCKET=$BUCKET REGION=$REGION bash hack/stage-src.sh "$ADIT_REF") || { log "stage-src failed; stopping"; exit 1; }
+        log "refresh: staged $SRC_S3"
+    fi
+    ON_TIMEOUT=2400 on "$CLIENT" "$(refresh_cmd client)" >"$OUT/refresh-client.txt" &
     for p in "${PROXIES[@]}"; do
-        ON_TIMEOUT=2400 on "$p" "cd $REPO && git fetch -q origin && git checkout -q $ADIT_REF && git reset -q --hard origin/$ADIT_REF && sudo ADIT_REF=$ADIT_REF bash hack/install.sh proxy 2>&1 | tail -15" >"$OUT/refresh-$p.txt" &
+        ON_TIMEOUT=2400 on "$p" "$(refresh_cmd proxy)" >"$OUT/refresh-$p.txt" &
     done
     wait
     for f in "$OUT"/refresh-*.txt; do
