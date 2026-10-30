@@ -10,6 +10,13 @@
 # Idempotent: each stage leaves a marker in /var/lib/adit and is skipped next time, so the same
 # script bakes an AMI and refreshes a box booted from one. Versions are pinned here and echoed to
 # /var/lib/adit/versions for the capability matrix.
+#
+# Offline (boxes with no internet route, `--no-public-ip`): ADIT_SRC_S3=s3://<bucket>/adit/src/<sha>,
+# staged by hack/stage-src.sh, builds adit from that source and its vendored crates (cargo
+# --frozen), and NIXL, if its marker is missing, from s3://<bucket>/adit/src/nixl-<NIXL_REF>/ (meson
+# --wrap-mode=nodownload); every other stage must already be marked done in the AMI, or the script
+# refuses. The one exception is the client's path tools (pip): without them in the AMI, an offline
+# client gets adit's binaries only (no path A/B tools, no adit-py), recorded as pathtools=absent.
 set +e
 set -uo pipefail
 echo "opts=$-"
@@ -32,6 +39,8 @@ NIXL_PREFIX=${NIXL_PREFIX:-/opt/nvidia/nvda_nixl}
 ADIT_REPO=${ADIT_REPO:-https://github.com/scttfrdmn/adit.git}
 ADIT_REF=${ADIT_REF:-main}
 ADIT_USER=${ADIT_USER:-ubuntu}
+ADIT_SRC_S3=${ADIT_SRC_S3-}
+ADIT_SRC_REGION=${ADIT_SRC_REGION:-us-east-1}
 SRC=/opt/adit-src
 STATE=/var/lib/adit
 mkdir -p "$STATE" "$SRC"
@@ -45,6 +54,14 @@ fail() { log "FAILED: $*"; exit 1; }
 
 arch=$(uname -m)
 log "role=$ROLE arch=$arch nixl=$NIXL_TAG prefix=$NIXL_PREFIX"
+if [[ -n $ADIT_SRC_S3 ]]; then
+    miss=()
+    for m in apt awscli efa absl grpc etcdcpp rust bgrun; do
+        done_ "$m" || miss+=("$m")
+    done
+    (( ${#miss[@]} == 0 )) || fail "offline (ADIT_SRC_S3): the AMI lacks stages ${miss[*]}, which need the internet"
+    log "offline: adit source from $ADIT_SRC_S3"
+fi
 
 if ! done_ apt; then
     export DEBIAN_FRONTEND=noninteractive
@@ -130,10 +147,17 @@ fi
 # The marker names the ref, so a box (or AMI) built at another NIXL rebuilds.
 if ! done_ "nixl-$NIXL_REF"; then
     cd "$SRC" && rm -rf nixl && mkdir nixl && cd nixl || fail nixl dir
-    git init -q && git remote add origin https://github.com/ai-dynamo/nixl.git &&
-        git fetch -q --depth 1 origin "$NIXL_REF" && git checkout -q FETCH_HEAD || fail nixl fetch
     opts=(-Dlibfabric_path=/opt/amazon/efa -Detcd_inc_path=/usr/local/include -Detcd_lib_path=/usr/local/lib
         -Dbuild_tests=false -Dbuild_examples=false --buildtype=release --prefix="$NIXL_PREFIX")
+    if [[ -n $ADIT_SRC_S3 ]]; then
+        # Staged with its meson subprojects already downloaded.
+        aws s3 cp --only-show-errors "${ADIT_SRC_S3%/*}/nixl-$NIXL_REF/nixl.tar.gz" /tmp/nixl.tar.gz --region "$ADIT_SRC_REGION" &&
+            tar xzf /tmp/nixl.tar.gz --strip-components=1 && rm -f /tmp/nixl.tar.gz || fail "nixl fetch (staged)"
+        opts+=(--wrap-mode=nodownload)
+    else
+        git init -q && git remote add origin https://github.com/ai-dynamo/nixl.git &&
+            git fetch -q --depth 1 origin "$NIXL_REF" && git checkout -q FETCH_HEAD || fail nixl fetch
+    fi
     [[ -n $CUDA ]] && opts+=(-Dcudapath_inc="$CUDA/include" -Dcudapath_lib="$CUDA/lib64")
     meson setup build "${opts[@]}" || fail nixl meson
     ninja -C build install || fail nixl build
@@ -143,6 +167,7 @@ if ! done_ "nixl-$NIXL_REF"; then
     ldconfig
     cd benchmark/nixlbench || fail nixlbench dir
     bopts=(-Dnixl_path="$NIXL_PREFIX" -Detcd_inc_path=/usr/local/include -Detcd_lib_path=/usr/local/lib --prefix="$NIXL_PREFIX")
+    [[ -n $ADIT_SRC_S3 ]] && bopts+=(--wrap-mode=nodownload)
     [[ -n $CUDA ]] && bopts+=(-Dcudapath_inc="$CUDA/include" -Dcudapath_lib="$CUDA/lib64")
     meson setup build "${bopts[@]}" || fail nixlbench meson
     ninja -C build install || fail nixlbench build
@@ -173,7 +198,9 @@ fi
 
 # Path A and B tools on clients: s5cmd, and a Python env with CuPy, KvikIO, the S3 Connector for
 # PyTorch, PyTorch and adit-py (the shared GPU oracle). Package names track the CUDA major version.
-if [[ $ROLE == client ]] && ! done_ pathtools; then
+if [[ $ROLE == client && -n $ADIT_SRC_S3 ]] && ! done_ pathtools; then
+    log "offline: the AMI has no path tools; skipping them and adit-py (path A/B and the Python oracle unavailable)"
+elif [[ $ROLE == client ]] && ! done_ pathtools; then
     if ! command -v s5cmd >/dev/null; then
         v=2.3.0
         curl -fsSL "https://github.com/peak/s5cmd/releases/download/v$v/s5cmd_${v}_Linux-64bit.tar.gz" | tar xz -C /usr/local/bin s5cmd || fail s5cmd
@@ -191,19 +218,41 @@ if [[ $ROLE == client ]] && ! done_ pathtools; then
 fi
 
 # The adit workspace: always refreshed (code changes between runs; the toolchain does not).
-log "building adit $ADIT_REF"
-if [[ ! -d $SRC/adit/.git ]]; then
-    git clone -q "$ADIT_REPO" "$SRC/adit" || fail adit clone
+frozen="" offline=false
+if [[ -n $ADIT_SRC_S3 ]]; then
+    log "building adit from $ADIT_SRC_S3"
+    st=$(mktemp -d)
+    for f in adit.tar.gz vendor.tar.gz cargo-config.toml; do
+        aws s3 cp --only-show-errors "$ADIT_SRC_S3/$f" "$st/$f" --region "$ADIT_SRC_REGION" || fail "fetch $ADIT_SRC_S3/$f"
+    done
+    # The staged tree replaces the checkout but keeps target/ (incremental builds). It has no .git;
+    # its commit is in COMMIT.
+    mkdir -p "$SRC/adit" && find "$SRC/adit" -mindepth 1 -maxdepth 1 ! -name target -exec rm -rf {} +
+    tar xzf "$st/adit.tar.gz" -C "$SRC" || fail "adit extract"
+    rm -rf "$SRC/vendor" && tar xzf "$st/vendor.tar.gz" -C "$SRC" || fail "vendor extract"
+    mkdir -p "$SRC/adit/.cargo" &&
+        sed "s|^directory = .*|directory = \"$SRC/vendor\"|" "$st/cargo-config.toml" >"$SRC/adit/.cargo/config.toml" || fail "cargo config"
+    rm -rf "$st"
+    chown -R "$ADIT_USER" "$SRC/vendor"
+    frozen=--frozen offline=true
+else
+    log "building adit $ADIT_REF"
+    # A tree staged offline has no .git; clone afresh.
+    if [[ ! -d $SRC/adit/.git ]]; then
+        rm -rf "$SRC/adit"
+        git clone -q "$ADIT_REPO" "$SRC/adit" || fail adit clone
+    fi
+    chown -R "$ADIT_USER" "$SRC/adit"
+    sudo -u "$ADIT_USER" -H bash -c "cd $SRC/adit && git fetch -q origin && git checkout -q $ADIT_REF && git reset -q --hard origin/$ADIT_REF 2>/dev/null || git reset -q --hard $ADIT_REF" || fail adit checkout
 fi
 chown -R "$ADIT_USER" "$SRC/adit"
-sudo -u "$ADIT_USER" -H bash -c "cd $SRC/adit && git fetch -q origin && git checkout -q $ADIT_REF && git reset -q --hard origin/$ADIT_REF 2>/dev/null || git reset -q --hard $ADIT_REF" || fail adit checkout
 pkgs="-p adit-proxy"
 [[ $ROLE == client ]] && pkgs="-p adit-client -p adit-proxy"
-sudo -u "$ADIT_USER" -H bash -c "cd $SRC/adit && NIXL_PREFIX=$NIXL_PREFIX NIXL_NO_STUBS_FALLBACK=1 ~/.cargo/bin/cargo build --release $pkgs" || fail "adit build (real NIXL)"
-if [[ $ROLE == client ]]; then
+sudo -u "$ADIT_USER" -H bash -c "cd $SRC/adit && NIXL_PREFIX=$NIXL_PREFIX NIXL_NO_STUBS_FALLBACK=1 ~/.cargo/bin/cargo build --release $frozen $pkgs" || fail "adit build (real NIXL)"
+if [[ $ROLE == client ]] && done_ pathtools; then
     # adit-py into the path-tools venv, against the real NIXL.
     rm -rf /tmp/adit-wheels
-    sudo -u "$ADIT_USER" -H bash -c "cd $SRC/adit/crates/adit-py && NIXL_PREFIX=$NIXL_PREFIX NIXL_NO_STUBS_FALLBACK=1 PATH=\$HOME/.cargo/bin:\$PATH /opt/adit-venv/bin/maturin build -q --release --auditwheel skip -o /tmp/adit-wheels" || fail "adit-py build"
+    sudo -u "$ADIT_USER" -H bash -c "cd $SRC/adit/crates/adit-py && NIXL_PREFIX=$NIXL_PREFIX NIXL_NO_STUBS_FALLBACK=1 CARGO_NET_OFFLINE=$offline PATH=\$HOME/.cargo/bin:\$PATH /opt/adit-venv/bin/maturin build -q --release --auditwheel skip -o /tmp/adit-wheels" || fail "adit-py build"
     /opt/adit-venv/bin/pip install -q --force-reinstall /tmp/adit-wheels/adit-*.whl || fail "adit-py install"
 fi
 for b in adit-proxy adit-nixl-probe-init adit-get adit-load adit-nixl-probe-target adit-fetch-bench; do
@@ -222,7 +271,9 @@ done
     echo "libfabric=$(fi_info --version 2>/dev/null | awk '/libfabric:/{print $2}')"
     echo "driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)"
     echo "cuda=$(nvcc --version 2>/dev/null | awk -F'release ' '/release/{print $2}' | cut -d, -f1)"
-    echo "adit=$(cd $SRC/adit && git rev-parse --short HEAD)"
+    echo "adit=$(cd $SRC/adit && { git rev-parse --short HEAD 2>/dev/null || cut -c1-7 COMMIT; })"
+    echo "adit_src=${ADIT_SRC_S3:-git}"
+    [[ $ROLE == client ]] && echo "pathtools=$(done_ pathtools && echo present || echo absent)"
     echo "memlock_new_sessions=$(sudo -u "$ADIT_USER" -i bash -c 'ulimit -l')"
 } >"$STATE/versions"
 cat "$STATE/versions"
