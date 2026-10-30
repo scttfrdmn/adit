@@ -15,7 +15,8 @@
 # staged by hack/stage-src.sh, builds adit from that source and its vendored crates (cargo
 # --frozen), and NIXL, if its marker is missing, from s3://<bucket>/adit/src/nixl-<NIXL_REF>/ (meson
 # --wrap-mode=nodownload); every other stage must already be marked done in the AMI, or the script
-# refuses.
+# refuses. The one exception is the client's path tools (pip): without them in the AMI, an offline
+# client gets adit's binaries only (no path A/B tools, no adit-py), recorded as pathtools=absent.
 set +e
 set -uo pipefail
 echo "opts=$-"
@@ -55,7 +56,7 @@ arch=$(uname -m)
 log "role=$ROLE arch=$arch nixl=$NIXL_TAG prefix=$NIXL_PREFIX"
 if [[ -n $ADIT_SRC_S3 ]]; then
     miss=()
-    for m in apt awscli efa absl grpc etcdcpp rust bgrun $([[ $ROLE == client ]] && echo pathtools); do
+    for m in apt awscli efa absl grpc etcdcpp rust bgrun; do
         done_ "$m" || miss+=("$m")
     done
     (( ${#miss[@]} == 0 )) || fail "offline (ADIT_SRC_S3): the AMI lacks stages ${miss[*]}, which need the internet"
@@ -197,7 +198,9 @@ fi
 
 # Path A and B tools on clients: s5cmd, and a Python env with CuPy, KvikIO, the S3 Connector for
 # PyTorch, PyTorch and adit-py (the shared GPU oracle). Package names track the CUDA major version.
-if [[ $ROLE == client ]] && ! done_ pathtools; then
+if [[ $ROLE == client && -n $ADIT_SRC_S3 ]] && ! done_ pathtools; then
+    log "offline: the AMI has no path tools; skipping them and adit-py (path A/B and the Python oracle unavailable)"
+elif [[ $ROLE == client ]] && ! done_ pathtools; then
     if ! command -v s5cmd >/dev/null; then
         v=2.3.0
         curl -fsSL "https://github.com/peak/s5cmd/releases/download/v$v/s5cmd_${v}_Linux-64bit.tar.gz" | tar xz -C /usr/local/bin s5cmd || fail s5cmd
@@ -246,7 +249,7 @@ chown -R "$ADIT_USER" "$SRC/adit"
 pkgs="-p adit-proxy"
 [[ $ROLE == client ]] && pkgs="-p adit-client -p adit-proxy"
 sudo -u "$ADIT_USER" -H bash -c "cd $SRC/adit && NIXL_PREFIX=$NIXL_PREFIX NIXL_NO_STUBS_FALLBACK=1 ~/.cargo/bin/cargo build --release $frozen $pkgs" || fail "adit build (real NIXL)"
-if [[ $ROLE == client ]]; then
+if [[ $ROLE == client ]] && done_ pathtools; then
     # adit-py into the path-tools venv, against the real NIXL.
     rm -rf /tmp/adit-wheels
     sudo -u "$ADIT_USER" -H bash -c "cd $SRC/adit/crates/adit-py && NIXL_PREFIX=$NIXL_PREFIX NIXL_NO_STUBS_FALLBACK=1 CARGO_NET_OFFLINE=$offline PATH=\$HOME/.cargo/bin:\$PATH /opt/adit-venv/bin/maturin build -q --release --auditwheel skip -o /tmp/adit-wheels" || fail "adit-py build"
@@ -270,6 +273,7 @@ done
     echo "cuda=$(nvcc --version 2>/dev/null | awk -F'release ' '/release/{print $2}' | cut -d, -f1)"
     echo "adit=$(cd $SRC/adit && { git rev-parse --short HEAD 2>/dev/null || cut -c1-7 COMMIT; })"
     echo "adit_src=${ADIT_SRC_S3:-git}"
+    [[ $ROLE == client ]] && echo "pathtools=$(done_ pathtools && echo present || echo absent)"
     echo "memlock_new_sessions=$(sudo -u "$ADIT_USER" -i bash -c 'ulimit -l')"
 } >"$STATE/versions"
 cat "$STATE/versions"
