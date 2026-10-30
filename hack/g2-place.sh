@@ -12,7 +12,7 @@
 # Outside us-east-1, us-east-2 and us-west-2 the Standard quotas (640 on-demand + 640 spot vCPU)
 # hold at most 6 c8gn.48xlarge, so the ladder there tops out at 6 proxies.
 #
-#   AWS_PROFILE=aws [REGIONS=us-east-1] bash hack/g2-place.sh
+#   AWS_PROFILE=aws [REGIONS=us-east-1] [NO_PUBLIC_IP=1] bash hack/g2-place.sh
 set +e
 set -uo pipefail
 echo "opts=$-"
@@ -60,6 +60,10 @@ for tr in "${TRIES[@]}"; do
         --query 'AccountAttributes[0].AttributeValues[0].AttributeValue' --output text 2>/dev/null)
     used=$(aws ec2 describe-addresses --region "$r" --query 'length(Addresses)' --output text 2>/dev/null)
     pefa=0
+    # NO_PUBLIC_IP=1: every box private-only (aditctl --no-public-ip, spawn#1433), so Elastic IPs
+    # do not limit the fleet: skip the headroom checks. spawn refuses a VPC without the endpoints.
+    npi=""
+    if [[ ${NO_PUBLIC_IP-0} == 1 ]]; then lim=1000 used=0 npi=--no-public-ip; fi
     # FLEET_EIPS: Elastic IPs the whole fleet needs (client + two-rail proxies; default 9 for 8).
     if (( ${lim:-0} - ${used:-0} < ${FLEET_EIPS:-9} )); then pefa=1; fi
     if [[ ${REQUIRE_ALL_RAILS-0} == 1 && $pefa == 1 ]]; then
@@ -76,13 +80,13 @@ for tr in "${TRIES[@]}"; do
     for z in $azs; do [[ " ${PROXY_FIRST_AZS-ap-northeast-1a us-east-1f us-east-1c} " == *" $z "* ]] && pf="$pf $z"; done
     if [[ -n $pf ]]; then
         for z in $pf; do
-            pout=$(timeout 1500 go run ./cmd/aditctl fleet up --name g2 --clients 0 --proxies 1 --candidates "$z:spot,$z" \
+            pout=$(timeout 1500 go run ./cmd/aditctl fleet up $npi --name g2 --clients 0 --proxies 1 --candidates "$z:spot,$z" \
                 --proxy-type c8gn.48xlarge --proxy-efa-interfaces "$pefa" --ttl 2h --client-cost-limit 1 --proxy-cost-limit "$pcap" \
                 --proxy-ami "$pami" --bucket "$bkt" --profile "${AWS_PROFILE:-aws}" 2>&1)
             echo "$pout" >>"$LOG"
             if grep -q '^adit-g2-proxy-0' <<<"$pout"; then
                 echo "[$(date -u +%TZ)] proxy-0 landed in $z first; trying the client" | tee -a "$LOG"
-                cout=$(timeout 2400 go run ./cmd/aditctl fleet up --name g2 --clients 1 --proxies 0 --candidates "$z:spot,$z" \
+                cout=$(timeout 2400 go run ./cmd/aditctl fleet up $npi --name g2 --clients 1 --proxies 0 --candidates "$z:spot,$z" \
                     --client-type "$t" --client-cost-limit "$ccap" --proxy-cost-limit 1 --ttl 2h --client-ami "$cami" \
                     --bucket "$bkt" --profile "${AWS_PROFILE:-aws}" 2>&1)
                 echo "$cout" >>"$LOG"
@@ -101,7 +105,7 @@ for tr in "${TRIES[@]}"; do
         c=$(for z in $azs; do printf '%s:spot,' "$z"; done; for z in $azs; do printf '%s,' "$z"; done)
         c=${c%,}
     fi
-    out=$(timeout 2400 go run ./cmd/aditctl fleet up --name g2 --candidates "$c" --client-type "$t" \
+    out=$(timeout 2400 go run ./cmd/aditctl fleet up $npi --name g2 --candidates "$c" --client-type "$t" \
         --proxy-type c8gn.48xlarge --proxy-efa-interfaces "$pefa" --proxies 1 --ttl 2h --client-cost-limit "$ccap" \
         --proxy-cost-limit "$pcap" --client-ami "$cami" --proxy-ami "$pami" --bucket "$bkt" \
         --profile "${AWS_PROFILE:-aws}" 2>&1)

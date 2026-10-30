@@ -95,6 +95,12 @@ type Spec struct {
 	Profile   string
 	// AMIFor resolves an AMI for a role in a region when Role.AMI is empty.
 	AMIFor func(ctx context.Context, region string, r Role) (string, error)
+	// NoPublicIP launches every box with private IPs only (spawn --no-public-ip, spawn 0.151.0+,
+	// spore-host/spawn#1433): no Elastic IP per multi-card EFA box, so the region's Elastic IP
+	// quota no longer caps the fleet. spawn refuses unless the subnet's VPC has the endpoints (or
+	// NAT) the bootstrap, spored and SSM need. Every adit path (EFA, proxy HTTP, S3 via the gateway
+	// endpoint, spawn connect over SSM) uses private addresses.
+	NoPublicIP bool
 	// Spawn is the spawn binary; Log receives every command and its output.
 	Spawn string
 	Log   io.Writer
@@ -263,6 +269,9 @@ func (s *Spec) launchArgs(r Role, i int, c Candidate, subnet, sg, ami, idFile, p
 	}
 	if r.EFAInterfaces > 0 {
 		a = append(a, "--efa-interfaces", fmt.Sprint(r.EFAInterfaces))
+	}
+	if s.NoPublicIP {
+		a = append(a, "--no-public-ip")
 	}
 	return a
 }

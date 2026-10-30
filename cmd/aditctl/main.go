@@ -322,6 +322,7 @@ func cmdFleet(ctx context.Context, args []string) error {
 	clusterPG := fs.Bool("cluster-pg", false, "place every box in one cluster placement group per AZ")
 	proxyEFA := fs.Int("proxy-efa-interfaces", 0, "spawn --efa-interfaces for proxies (0 = all; 1 needs no Elastic IP)")
 	proxyStart := fs.Int("proxy-start", 0, "first proxy index (add proxies to a placed fleet with --clients 0 and --candidates its AZ)")
+	noPublicIP := fs.Bool("no-public-ip", false, "launch every box with private IPs only (spawn --no-public-ip): no Elastic IPs; needs VPC endpoints or NAT, which spawn checks")
 	proxySpot := fs.Bool("proxy-spot", false, "launch proxies on spot first, on-demand when spot has no capacity or quota (size --proxy-cost-limit for on-demand)")
 	_ = fs.Parse(args[1:])
 	if *name == "" {
@@ -350,7 +351,7 @@ func cmdFleet(ctx context.Context, args []string) error {
 			Name: *name, Candidates: cs, ClusterPG: *clusterPG, TTL: *ttl, Bucket: *bucket, Profile: *profile,
 			Client: fleet.Role{Name: "client", InstanceType: *clientType, Count: *clients, AMI: *clientAMI, Command: *clientCmd, CostLimit: *clientCap, VolumeGiB: 200},
 			Proxy:  fleet.Role{Name: "proxy", InstanceType: *proxyType, Count: *proxies, AMI: *proxyAMI, Command: *proxyCmd, CostLimit: *proxyCap, VolumeGiB: 100, EFAInterfaces: *proxyEFA},
-			AMIFor: amiFor, Spawn: *spawnBin, Log: os.Stderr, DryRun: *dry, ProxySpot: *proxySpot, ProxyStart: *proxyStart,
+			AMIFor: amiFor, Spawn: *spawnBin, Log: os.Stderr, DryRun: *dry, ProxySpot: *proxySpot, ProxyStart: *proxyStart, NoPublicIP: *noPublicIP,
 		}
 		ec2For := func(region string) *ec2.Client {
 			cfg, _ := awsConfig(ctx, region)
