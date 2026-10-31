@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - uploads the wheelhouse and s5cmd to `s3://<bucket>/adit/src/wheels-py<XY>-cu<N>/`.
 
   `install.sh` with `ADIT_SRC_S3` installs the path tools from there when the AMI lacks them, so path B and adit-py run on private-only clients (H-ceiling).
+  The wheelhouse is built with `pip wheel` so it holds only wheels (`s3torchconnector` 1.5.0 is a source distribution on PyPI), and it keeps `setuptools`, which `torch` requires at install. The script's own offline check caught both.
 - **`hack/g2.sh` steps `r98` and `pairsplit`.**
   - `r98` (#98) repeats E<N> on T2 with adit-get core dumps kept (`CORES=1`, core_pattern to `/var/tmp`) and libfabric warnings (`FI_LOG_LEVEL`). It then captures the client's EFA kernel messages and the proxies' failed-transfer warnings.
   - `pairsplit` (#53) rotates, on proxy 0 and GPU 0, a fetch-only run (`adit-fetch-bench`) against G1P0, with proxy 0's per-thread CPU sampled. It ends with one G1P0 under `perf record`.
