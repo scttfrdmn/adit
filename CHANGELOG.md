@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`bench/results/paths-g260.csv`: #60, the full balanced 8-proxy ladder on p5en.48xlarge** (us-east-1a, 2026-10-31). It has 24 rows:
+  - the ladder: E8, E4, E2 and E1 × 3 cycles at 4,096 slots;
+  - slotcmp: E8 at 2,048 and 4,096 slots, 3 cycles;
+  - csweep: E8 at concurrency 128 and 512, 3 cycles each.
+
+  The boxes were private-IP only and built offline from staged source. One row (ladder cycle 2, E8) has `oracle=partial`: RDMA write failures to GPUs 4–7, then an EFA provider abort in adit-get (#98).
 - **`hack/stage-src.sh` and an offline mode in `hack/install.sh` (`ADIT_SRC_S3`)** for boxes with no internet route (`--no-public-ip`, #60). From the operator machine, `stage-src.sh` uploads a `git archive` of a pushed ref (with a `COMMIT` file) and `cargo vendor` of its locked crates, including `nixl-sys`, to `s3://<bucket>/adit/src/<sha>/`. It also uploads the NIXL source at the pinned ref, with its meson subprojects, to `adit/src/nixl-<ref>/`; the AMIs carry NIXL v1.2.0, so every refresh rebuilds NIXL. `install.sh` then builds NIXL (`--wrap-mode=nodownload`) and adit (`cargo --frozen`) from these, and refuses if the AMI lacks any other stage that needs the internet. The exception is the client's path tools, which the client AMI lacks: offline, a client gets adit's binaries only, without path A/B tools or adit-py, and `versions` records `pathtools=absent`. `adit_src` in `versions` records the source. `hack/g2.sh` and `hack/fetchprobe.sh` take `OFFLINE=1`: they stage `ADIT_REF` and refresh each box with `install.sh` from the staged tree.
 - **`aditctl fleet up --no-public-ip`** passes spawn's `--no-public-ip` (spawn 0.151.0, spore-host/spawn#1433). Every box launches with private IPs only, so no Elastic IP is needed per multi-card EFA box, and spawn refuses a VPC that lacks the endpoints. `hack/g2-place.sh` gains `NO_PUBLIC_IP=1`, which passes the flag and skips the Elastic IP headroom checks.
 - **Slot occupancy and the completion lever** (#86, #76).
