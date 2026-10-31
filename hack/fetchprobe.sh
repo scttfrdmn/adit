@@ -19,7 +19,7 @@ BOX=adit-$FLEET-proxy-0
 OUT=${2:-bench/runs/fp-$(date -u +%Y%m%dT%H%M%SZ)}
 REPO=/opt/adit-src/adit
 mkdir -p "$OUT"
-on() { timeout "${ON_TIMEOUT:-900}" "$SPAWN" connect "$BOX" --user ubuntu -- "$*" 2>&1 | grep -v -E 'newer version|releases/tag|^$|Looking up|Found instance|Connecting|Permanently'; }
+on() { timeout "${ON_TIMEOUT:-900}" "$SPAWN" connect "$BOX" --user ubuntu -- "$*" 2>&1 | grep -v -E 'newer version|releases/tag|^$|Looking up|Found instance|Connecting|Permanently|no public IP \(private only\)|via SSM RunCommand'; }
 log() { echo "[$(date -u +%FT%TZ)] $*" | tee -a "$OUT/run.log"; }
 push() { AWS_PROFILE=${AWS_PROFILE-aws} aws s3 cp --recursive --quiet "$OUT" "s3://$BUCKET/adit/fetchprobe/$(basename "$OUT")/" --region "$REGION"; }
 trap push EXIT

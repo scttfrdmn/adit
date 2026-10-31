@@ -22,7 +22,14 @@
 #   sweep     at E<N>: chunk 4/16 MiB and slots SWEEP_SLOTS, one T2 read each (restarts the proxies)
 #   t1        T1 at E<N>, striped and spread over all GPUs, 3 runs
 #   bsweep    path B tuning grid on T2-64 (threads x task size x objects in flight), all GPUs
-#   ceiling   H-ceiling: B512 B1024 E<N> interleaved on T2-64, all GPUs (CEIL_ARMS to override)
+#   ceiling   H-ceiling: B512 B1024 E<N> interleaved on T2-64, all GPUs (CEIL_ARMS to override;
+#             CEIL_E_CONCURRENCY for the E arm, B_TASK_MIB / B_CONCURRENCY for B's best point)
+#   r98       #98 reproduction: E<N> on T2 R98_RUNS times (default 10) with adit-get core dumps kept
+#             and libfabric warnings (FI_LOG_LEVEL), then the client's EFA kernel messages and the
+#             proxies' failed-transfer warnings
+#   pairsplit #53 localization on proxy 0 / GPU 0, rotated per cycle (SPLIT_CYCLES, default 3):
+#             fetch-only (adit-fetch-bench, adit-proxy stopped) vs G1P0 with proxy 0's per-thread
+#             CPU sampled; then one G1P0 under perf record. Write-only is the health probe.
 #   collect   copy every results CSV and proxy /metrics off the boxes, push to the bench bucket
 #
 #   ADIT_SPAWN=... STEPS="refresh health start plans ladder" bash hack/g2.sh <fleet> [proxies=8]
@@ -51,9 +58,12 @@ E_ARGS=${E_ARGS:---nixl-progress-delay-us 100 --agent-per-gpu --pin-gpu-proxy}
 CLIENT=adit-$FLEET-client-0
 OUT=${OUT:-bench/runs/g2-$(date -u +%Y%m%dT%H%M%SZ)}
 mkdir -p "$OUT"
-on() { local box=$1; shift; timeout "${ON_TIMEOUT:-900}" "$SPAWN" connect "$box" --user ubuntu -- "$*" 2>&1 | grep -v -E 'newer version|releases/tag|^$|Looking up|Found instance|Connecting|Permanently'; }
+# spawn connect's own lines are dropped, including the SSM banner of private-only boxes (#60: it
+# reached the results CSVs).
+on() { local box=$1; shift; timeout "${ON_TIMEOUT:-900}" "$SPAWN" connect "$box" --user ubuntu -- "$*" 2>&1 | grep -v -E 'newer version|releases/tag|^$|Looking up|Found instance|Connecting|Permanently|no public IP \(private only\)|via SSM RunCommand'; }
 log() { echo "[$(date -u +%FT%TZ)] $*" | tee -a "$OUT/run.log"; }
-push() { AWS_PROFILE=${AWS_PROFILE-aws} aws s3 cp --recursive --quiet "$OUT" "s3://$BUCKET/adit/g2/$(basename "$OUT")/" --region "$REGION"; }
+RAW=s3://$BUCKET/adit/g2/$(basename "$OUT")
+push() { AWS_PROFILE=${AWS_PROFILE-aws} aws s3 cp --recursive --quiet "$OUT" "$RAW/" --region "$REGION"; }
 trap push EXIT
 
 # Boxes and private addresses from the fleet.
@@ -102,23 +112,25 @@ start_proxies() {
     done
 }
 
-client_run() {
+client_run() { box_run "$CLIENT" "$@"; }
+
+box_run() {
     # Long work runs under bgrun on the client (spawn connect block-buffers); poll until its process
     # exits (not until a marker line: a command that fails to parse never prints one). BUCKET and
     # REGION are exported to it: the on-box runners region-check and read them (G2 #48 ran its
     # on-box checks against the default bucket when they were not).
-    local name=$1 cmd=$2
+    local box=$1 name=$2 cmd=$3
     local pid
-    pid=$(on "$CLIENT" "cd $REPO && ulimit -n \$(ulimit -Hn) && bgrun -o /tmp/g2-$name.out bash -c 'export BUCKET=$BUCKET REGION=$REGION; $cmd; echo EXIT=\$?'" | grep -o 'pid=[0-9]*' | cut -d= -f2)
+    pid=$(on "$box" "cd $REPO && ulimit -n \$(ulimit -Hn) && bgrun -o /tmp/g2-$name.out bash -c 'export BUCKET=$BUCKET REGION=$REGION; $cmd; echo EXIT=\$?'" | grep -o 'pid=[0-9]*' | cut -d= -f2)
     [[ -n $pid ]] || { log "$name: did not start"; return 1; }
     local t0=$SECONDS
     while :; do
         sleep 30
-        on "$CLIENT" "tail -1 /tmp/g2-$name.out" | tail -1 | sed "s/^/  $name: /"
-        on "$CLIENT" "kill -0 $pid 2>/dev/null && echo running" | grep -q running || break
+        on "$box" "tail -1 /tmp/g2-$name.out" | tail -1 | sed "s/^/  $name: /"
+        on "$box" "kill -0 $pid 2>/dev/null && echo running" | grep -q running || break
         (( SECONDS - t0 > ${STEP_TIMEOUT:-3600} )) && { log "$name: still running after ${STEP_TIMEOUT:-3600}s; leaving it"; break; }
     done
-    on "$CLIENT" "cat /tmp/g2-$name.out" >"$OUT/$name.out"
+    on "$box" "cat /tmp/g2-$name.out" >"$OUT/$name.out"
     log "$name: $(grep -E '^EXIT=|syntax error|command not found' "$OUT/$name.out" | head -2 | tr '\n' ' ')"
     push
 }
@@ -176,7 +188,7 @@ step_plans() {
         wc -l /tmp/t1-plan.jsonl /tmp/t2-plan.jsonl /tmp/t2-64-plan.jsonl /tmp/t2-256-plan.jsonl" | tee -a "$OUT/run.log"
 }
 
-common="CYCLES=$CYCLES DEVICES=$DEVS DEVICES_PER_ARM=${DEVICES_PER_ARM-0} BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY"
+common="CYCLES=$CYCLES DEVICES=$DEVS DEVICES_PER_ARM=${DEVICES_PER_ARM-0} BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY${E_CONC_PER_PROXY:+ E_CONC_PER_PROXY=$E_CONC_PER_PROXY}"
 
 step_confirm50() {
     # #50 mechanism check: the same E8 read of T2-64 unpinned (8 proxies may write into one agent)
@@ -314,11 +326,65 @@ step_bsweep() {
 
 step_ceiling() {
     log "ceiling: ${CEIL_ARMS:-B512 B1024 E$N} on T2-64, all GPUs"
-    client_run ceiling "PLAN=/tmp/t2-64-plan.jsonl PROXIES=$URLS ARMS=\"${CEIL_ARMS:-B512 B1024 E$N}\" STRIPE=0 E_ARGS=\"$E_ARGS\" B_CONCURRENCY=${B_CONCURRENCY:-16} B_TASK_MIB=${B_TASK_MIB:-64} $common OUT=/tmp/g2-ceiling.csv bash bench/paths/interleave.sh T2-64"
+    client_run ceiling "PLAN=/tmp/t2-64-plan.jsonl PROXIES=$URLS ARMS=\"${CEIL_ARMS:-B512 B1024 E$N}\" STRIPE=0 E_ARGS=\"$E_ARGS\" B_CONCURRENCY=${B_CONCURRENCY:-16} B_TASK_MIB=${B_TASK_MIB:-64} $common E_CONCURRENCY=${CEIL_E_CONCURRENCY:-$E_CONCURRENCY} OUT=/tmp/g2-ceiling.csv bash bench/paths/interleave.sh T2-64"
+}
+
+step_r98() {
+    # #98: the E<N> arm that failed RDMA writes to GPUs 4-7 and aborted in the EFA provider, repeated
+    # on the same proxies. Cores go to /var/tmp (the DLAMI's apport pipe kept none in #60).
+    on "$CLIENT" "sudo sysctl -qw kernel.core_pattern=/var/tmp/core.%e.%p.%t; cat /proc/sys/kernel/core_pattern; sudo dmesg | wc -l >/tmp/r98-dmesg0" | tee -a "$OUT/run.log"
+    for p in "${PROXIES[@]}"; do on "$p" "wc -l </tmp/proxy-base.out >/tmp/r98-log0 2>/dev/null"; done
+    log "r98: E$N x ${R98_RUNS:-10} on T2, cores kept, FI_LOG_LEVEL=${R98_FI_LOG:-warn}"
+    client_run r98 "PLAN=/tmp/t2-plan.jsonl PROXIES=$URLS ARMS=E$N CYCLES=${R98_RUNS:-10} STRIPE=0 CORES=1 FI_LOG_LEVEL=${R98_FI_LOG:-warn} E_ARGS=\"$E_ARGS\" DEVICES=$DEVS DEVICES_PER_ARM=${DEVICES_PER_ARM-0} BUF_GIB=$BUF_GIB E_CONCURRENCY=${R98_CONCURRENCY:-$E_CONCURRENCY} OUT=/tmp/g2-r98.csv bash bench/paths/interleave.sh T2"
+    on "$CLIENT" "sudo dmesg -T | tail -n +\$((\$(cat /tmp/r98-dmesg0) + 1)) | grep -iE 'efa|rdmap|nvidia|xid|segfault' | tail -300; echo '# cores'; ls -la /var/tmp/core.* 2>/dev/null" >"$OUT/r98-client-kernel.txt"
+    for p in "${PROXIES[@]}"; do
+        on "$p" "tail -n +\$((\$(cat /tmp/r98-log0) + 1)) /tmp/proxy-base.out | sed 's/\x1b\[[0-9;]*m//g' | grep -E 'WARN|ERROR' | head -200" | sed "s/^/$p: /"
+    done >"$OUT/r98-proxy-warn.txt"
+    log "r98: $(grep -c . "$OUT/r98-proxy-warn.txt") proxy warning lines; $(grep -c 'core\.' "$OUT/r98-client-kernel.txt") cores"
+    push
+}
+
+step_pairsplit() {
+    # #53: where proxy 0 / GPU 0's ~169 Gb/s sits. Per cycle, in rotated order:
+    #   fetch  adit-fetch-bench on proxy 0 (the production fetch engine and slot pool, write a no-op)
+    #          at the proxy's slots and SPLIT_OBJS objects in flight, adit-proxy stopped;
+    #   e1     G1P0 at concurrency SPLIT_OBJS, proxy 0's threads sampled (bench/paths/threadcpu.sh).
+    # Then one G1P0 with proxy 0 under perf record. Both read all of T2.
+    local p0=${PROXIES[0]} objs=${SPLIT_OBJS:-128} slots modes=(fetch e1) c k m
+    slots=$(grep -oE -- '--slots [0-9]+' <<<"$PROXY_ARGS" | awk '{print $2}')
+    on "$p0" "aws s3 cp --only-show-errors s3://$BUCKET/adit/bin/aditctl-linux-arm64 /tmp/aditctl --region $REGION && sudo install /tmp/aditctl /usr/local/bin/aditctl
+        aws s3 cp --only-show-errors s3://$BUCKET/adit/manifests/t2.jsonl /tmp/t2.jsonl --region $REGION && aditctl presign --region $REGION --manifest /tmp/t2.jsonl --out /tmp/t2-plan.jsonl --ttl 8h; wc -l /tmp/t2-plan.jsonl; rm -rf /tmp/ps-fetch*" | tee -a "$OUT/run.log"
+    for c in $(seq 1 "${SPLIT_CYCLES:-3}"); do
+        for k in "${!modes[@]}"; do
+            m=${modes[$(( (k + c - 1) % ${#modes[@]} ))]}
+            log "pairsplit: cycle $c, $m"
+            if [[ $m == fetch ]]; then
+                on "$p0" "pkill -x adit-proxy; sleep 2" >/dev/null
+                box_run "$p0" "pairsplit-c$c-fetch" "PLAN=/tmp/t2-plan.jsonl CYCLES=1 ARMS=s${slots:-4096}o$objs OUT=/tmp/ps-fetch-c$c.csv bash bench/paths/fetchprobe.sh T2"
+                on "$p0" "cat /tmp/ps-fetch-c$c.csv" >"$OUT/pairsplit-fetch-c$c.csv"
+                on "$p0" "aws s3 cp --recursive --quiet /tmp/ps-fetch-c$c-snap $RAW/pairsplit-fetch-c$c-snap/ --region $REGION" >/dev/null
+                start_proxies "$PROXY_ARGS" "ps-c$c"
+            else
+                on "$p0" "bgrun -o /tmp/ps-tc-c$c.out bash $REPO/bench/paths/threadcpu.sh \$(pgrep -x adit-proxy) /tmp/ps-threads-c$c.txt 1" >/dev/null
+                client_run "pairsplit-c$c-e1" "PLAN=/tmp/t2-plan.jsonl PROXIES=$URLS ARMS=G1P0 CYCLES=1 CYCLE_BASE=$((c - 1)) DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$objs OUT=/tmp/g2-pairsplit.csv bash bench/paths/interleave.sh T2"
+                # Thread samples are megabytes: off the box through the bucket, not spawn connect
+                # (SSM output is bounded).
+                on "$p0" "pkill -f threadcpu.sh; gzip -f /tmp/ps-threads-c$c.txt && aws s3 cp --only-show-errors /tmp/ps-threads-c$c.txt.gz $RAW/pairsplit-threads-c$c.txt.gz --region $REGION" >/dev/null
+                AWS_PROFILE=${AWS_PROFILE-aws} aws s3 cp --only-show-errors "$RAW/pairsplit-threads-c$c.txt.gz" "$OUT/" --region "$REGION"
+            fi
+        done
+    done
+    log "pairsplit: G1P0 under perf record on $p0"
+    # perf covers the whole arm: started before it, stopped (SIGINT) after.
+    on "$p0" "sudo sysctl -qw kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0; bgrun -o /tmp/ps-perf.out sudo perf record -F 99 -g -p \$(pgrep -x adit-proxy) -o /tmp/ps.perf.data" >/dev/null
+    client_run pairsplit-perf "PLAN=/tmp/t2-plan.jsonl PROXIES=$URLS ARMS=G1P0 CYCLES=1 CYCLE_BASE=9 DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$objs OUT=/tmp/g2-pairsplit-perf.csv bash bench/paths/interleave.sh T2"
+    ON_TIMEOUT=600 on "$p0" "sudo pkill -INT -x perf; while pgrep -x perf >/dev/null; do sleep 2; done; sudo perf report -i /tmp/ps.perf.data --stdio --no-children -g none --sort comm,dso,symbol --percent-limit 0.3 2>/dev/null | grep -v '^\$' | head -200" >"$OUT/pairsplit-perf-top.txt"
+    on "$p0" "sudo perf report -i /tmp/ps.perf.data --stdio --no-children -g none --sort comm --percent-limit 0.5 2>/dev/null | grep -v '^\$' | head -60" >"$OUT/pairsplit-perf-comm.txt"
+    push
 }
 
 step_collect() {
-    for f in confirm50 ladder csweep csweep-c128 csweep-c256 csweep-c512 slotcmp-s2048 slotcmp-s4096 sweep t1 ceiling bsweep pairs pairslots-s2048 pairslots-s4096 pairbind-unbound pairbind-bound pairbind-bound2r; do
+    for f in confirm50 ladder csweep csweep-c128 csweep-c256 csweep-c512 slotcmp-s2048 slotcmp-s4096 sweep t1 ceiling bsweep pairs pairslots-s2048 pairslots-s4096 pairbind-unbound pairbind-bound pairbind-bound2r r98 pairsplit pairsplit-perf; do
         on "$CLIENT" "test -f /tmp/g2-$f.csv && cat /tmp/g2-$f.csv" >"$OUT/g2-$f.csv"
         on "$CLIENT" "test -f /tmp/g2-$f.order && cat /tmp/g2-$f.order" >"$OUT/g2-$f.order"
         # One drop_caches status line per cold rung (#70).

@@ -25,7 +25,9 @@
 # Knobs: CYCLE_BASE (added to the cycle number in snapshot names, for callers that run one cycle
 # per call; #71), DEVICES (GPUs, default 0), DEVICES_PER_ARM (1: arm E<k> uses the first k GPUs), BUF_GIB (per GPU, default 65), CHUNK_MIB (E, default 8), B_CONCURRENCY (objects in flight
 # for B, default 1), E_CONCURRENCY (default 1), STRIPE, E_ARGS (extra adit-get flags, e.g.
-# "--spread --chunk-mib 16 --nixl-progress-delay-us 100").
+# "--spread --chunk-mib 16 --nixl-progress-delay-us 100"), E_CONC_PER_PROXY (E arms: concurrency k x
+# this for E<k>, so per-proxy load is the same on every rung; #60 held the total fixed instead),
+# CORES (1: keep adit-get core dumps, ulimit -c, for #98; the core_pattern is the caller's).
 P=X
 source "$(dirname "$0")/lib/common.sh"
 PLAN=${PLAN:?plan JSONL with presigned urls}
@@ -42,6 +44,7 @@ E_ARGS=${E_ARGS:-}
 CHUNK_MIB=${CHUNK_MIB:-8}
 PY=${PY:-/opt/adit-venv/bin/python}
 n=${#ARMS[@]}
+[[ ${CORES-0} == 1 ]] && ulimit -c "${CORE_LIMIT_KB:-20000000}"
 # Per-arm snapshots (law 6, #51): every proxy's /metrics (pipeline histograms, its EFA counters) and
 # the client's EFA hw_counters per device, before and after each E arm, under ${OUT%.csv}-snap/.
 SNAP=${OUT%.csv}-snap
@@ -110,12 +113,14 @@ arm() {
                 devs=$(tr ',' '\n' <<<"$DEVICES" | head -n "$k" | paste -sd, -)
             fi
             [[ $STRIPE == 1 && $k -gt 1 ]] && st=(--stripe)
+            local conc=$E_CONCURRENCY
+            [[ -n ${E_CONC_PER_PROXY-} ]] && conc=$(( k * E_CONC_PER_PROXY ))
             snap "c$c-$a-pre" "${PX[@]:0:k}"
             # NIXL warnings (e.g. "Duplicate fragment received": #50) land in the arm's stderr file.
             export NIXL_LOG_LEVEL=${NIXL_LOG_LEVEL:-WARN}
             # shellcheck disable=SC2086  # E_ARGS is a flag list
             adit-get --proxies "$px" "${st[@]}" --plan "$PLAN" --agent-name "il-$a-$c-$$" --devices "$devs" \
-                --buffer-gib "$BUF_GIB" --chunk-mib "$CHUNK_MIB" --concurrency "$E_CONCURRENCY" --runs 1 $E_ARGS \
+                --buffer-gib "$BUF_GIB" --chunk-mib "$CHUNK_MIB" --concurrency "$conc" --runs 1 $E_ARGS \
                 --meta path=E --meta "workload=$WORKLOAD" --meta "cold=$COLD" \
                 --meta "client_instance=$CLIENT_INSTANCE" --meta "commit=$COMMIT" --out "$OUT" 2>"$SNAP/c$c-$a.stderr" | grep -E '^E,' | tail -1 &
             local ep=$!
