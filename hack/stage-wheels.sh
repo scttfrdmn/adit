@@ -35,7 +35,7 @@ $V install -q "kvikio-cu${cu}" || $V install -q kvikio-cu12 || fail kvikio
 TORCH_INDEX=https://download.pytorch.org/whl/cu${cu}0
 $V install -q torch --index-url "$TORCH_INDEX" || $V install -q torch || fail torch
 $V install -q s3torchconnector || fail s3torchconnector
-$V freeze --all | grep -vE '^(pip|setuptools|wheel)==' >"$W/requirements.txt" || fail freeze
+$V freeze --all | grep -vE '^pip==' >"$W/requirements.txt" || fail freeze
 log "$(wc -l <"$W/requirements.txt") packages"
 
 # Exactly those versions, as wheels for this platform: `pip wheel` builds any that PyPI has only as
