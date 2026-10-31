@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`hack/g2.sh` and `hack/fetchprobe.sh` drop spawn's SSM banner lines** (`… no public IP (private only) …`, `… via SSM RunCommand …`) from captured output. In #60 they reached the results CSVs.
 - **`bench/paths/fetchprobe.sh` samples once a second for the whole arm** (#79). It records the bench's socket fds, threads by name, and per-thread CPU (`pidstat` for the whole arm), and profiled arms run the whole bench under `perf record`. Polling `ss` with thousands of sockets was slower than an arm, so the earlier readback and profile came back empty.
 - **`bench/paths/fetchprobe.sh` readback and profiling wait for the bench's first S3 socket.** In the first fetch-CPU run, both sampled the slot-pool allocation instead of the transfer.
 - **`bench/paths/fetchprobe.sh` raises the open-files limit to the hard limit and logs it, and warns when an arm has failed chunks.** The first run's arms above 256 CRT connections ran out of file descriptors at the default 1,024, so their chunks failed and retried. Those rows measure that defect, not the fetch path.
@@ -17,6 +18,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`hack/stage-wheels.sh`, and the client's path tools offline.** Run on a box from the client AMI that has an internet route, `stage-wheels.sh`:
+  - installs the same packages as `install.sh`'s pathtools stage;
+  - downloads exactly those versions as wheels;
+  - checks that a fresh venv installs them with `--no-index`;
+  - uploads the wheelhouse and s5cmd to `s3://<bucket>/adit/src/wheels-py<XY>-cu<N>/`.
+
+  `install.sh` with `ADIT_SRC_S3` installs the path tools from there when the AMI lacks them, so path B and adit-py run on private-only clients (H-ceiling).
+- **`hack/g2.sh` steps `r98` and `pairsplit`.**
+  - `r98` (#98) repeats E<N> on T2 with adit-get core dumps kept (`CORES=1`, core_pattern to `/var/tmp`) and libfabric warnings (`FI_LOG_LEVEL`). It then captures the client's EFA kernel messages and the proxies' failed-transfer warnings.
+  - `pairsplit` (#53) rotates, on proxy 0 and GPU 0, a fetch-only run (`adit-fetch-bench`) against G1P0, with proxy 0's per-thread CPU sampled. It ends with one G1P0 under `perf record`.
+- **`bench/paths/threadcpu.sh`** samples per-thread CPU of one process from `/proc`. It needs no sysstat, which offline boxes lack.
+- **`bench/paths/interleave.sh` `E_CONC_PER_PROXY`** sets E<k>'s concurrency to k × the value, so every rung has the same per-proxy load. #60's ladder held the total fixed instead, which confounded H-scale.
+- **`CEIL_E_CONCURRENCY`** in `hack/g2.sh`'s ceiling step runs E at its best concurrency (law 3).
 - **`bench/results/paths-g260.csv`: #60, the full balanced 8-proxy ladder on p5en.48xlarge** (us-east-1a, 2026-10-31). It has 24 rows:
   - the ladder: E8, E4, E2 and E1 × 3 cycles at 4,096 slots;
   - slotcmp: E8 at 2,048 and 4,096 slots, 3 cycles;

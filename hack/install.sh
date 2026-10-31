@@ -15,8 +15,10 @@
 # staged by hack/stage-src.sh, builds adit from that source and its vendored crates (cargo
 # --frozen), and NIXL, if its marker is missing, from s3://<bucket>/adit/src/nixl-<NIXL_REF>/ (meson
 # --wrap-mode=nodownload); every other stage must already be marked done in the AMI, or the script
-# refuses. The one exception is the client's path tools (pip): without them in the AMI, an offline
-# client gets adit's binaries only (no path A/B tools, no adit-py), recorded as pathtools=absent.
+# refuses. The one exception is the client's path tools (pip): offline they come from a wheelhouse
+# staged by hack/stage-wheels.sh (ADIT_WHEELS_S3, default s3://<bucket>/adit/src/wheels-py<XY>-cu<N>);
+# without one, an offline client gets adit's binaries only (no path A/B tools, no adit-py), recorded
+# as pathtools=absent.
 set +e
 set -uo pipefail
 echo "opts=$-"
@@ -198,8 +200,22 @@ fi
 
 # Path A and B tools on clients: s5cmd, and a Python env with CuPy, KvikIO, the S3 Connector for
 # PyTorch, PyTorch and adit-py (the shared GPU oracle). Package names track the CUDA major version.
+# hack/stage-wheels.sh installs the same list to build the offline wheelhouse: keep them in step.
 if [[ $ROLE == client && -n $ADIT_SRC_S3 ]] && ! done_ pathtools; then
-    log "offline: the AMI has no path tools; skipping them and adit-py (path A/B and the Python oracle unavailable)"
+    cu=$(nvcc --version 2>/dev/null | sed -n 's/.*release \([0-9]*\)\..*/\1/p')
+    py=$(python3 -c 'import sys; print("%d%d" % sys.version_info[:2])')
+    WH=${ADIT_WHEELS_S3:-${ADIT_SRC_S3%/*}/wheels-py$py-cu$cu}
+    if aws s3 ls "$WH/requirements.txt" --region "$ADIT_SRC_REGION" >/dev/null 2>&1; then
+        log "offline: path tools from $WH"
+        rm -rf /opt/adit-wheels && aws s3 cp --recursive --only-show-errors "$WH" /opt/adit-wheels --region "$ADIT_SRC_REGION" || fail "wheelhouse fetch"
+        command -v s5cmd >/dev/null || install -m 755 /opt/adit-wheels/s5cmd /usr/local/bin/s5cmd || fail s5cmd
+        python3 -m venv /opt/adit-venv || fail venv
+        /opt/adit-venv/bin/pip install -q --no-index --find-links /opt/adit-wheels -r /opt/adit-wheels/requirements.txt || fail "pip (wheelhouse)"
+        chown -R "$ADIT_USER" /opt/adit-venv
+        mark pathtools
+    else
+        log "offline: no path tools in the AMI and no wheelhouse at $WH; skipping them and adit-py (path A/B and the Python oracle unavailable)"
+    fi
 elif [[ $ROLE == client ]] && ! done_ pathtools; then
     if ! command -v s5cmd >/dev/null; then
         v=2.3.0
