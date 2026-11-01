@@ -44,7 +44,13 @@ E_ARGS=${E_ARGS:-}
 CHUNK_MIB=${CHUNK_MIB:-8}
 PY=${PY:-/opt/adit-venv/bin/python}
 n=${#ARMS[@]}
-[[ ${CORES-0} == 1 ]] && ulimit -c "${CORE_LIMIT_KB:-20000000}"
+# Cores (#98): bgrun's hard core limit is 0, so a plain `ulimit -c` is refused (the first r98 run
+# kept no core): raise this shell's hard limit with prlimit first; children inherit it.
+if [[ ${CORES-0} == 1 ]]; then
+    sudo prlimit --pid $$ --core=unlimited:unlimited || log "WARNING: prlimit --core failed; no cores"
+    ulimit -c "${CORE_LIMIT_KB:-20000000}" || log "WARNING: ulimit -c failed; no cores"
+    log "core limit: soft $(ulimit -c) hard $(ulimit -Hc), pattern $(cat /proc/sys/kernel/core_pattern)"
+fi
 # Per-arm snapshots (law 6, #51): every proxy's /metrics (pipeline histograms, its EFA counters) and
 # the client's EFA hw_counters per device, before and after each E arm, under ${OUT%.csv}-snap/.
 SNAP=${OUT%.csv}-snap
