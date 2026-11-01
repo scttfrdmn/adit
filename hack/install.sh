@@ -55,6 +55,9 @@ mark() { touch "$STATE/$1.done"; }
 fail() { log "FAILED: $*"; exit 1; }
 
 arch=$(uname -m)
+# The AWS CLI's CRT transfer client opens a connection per part: on a p5en, fetching the 3 GB
+# wheelhouse exceeded the default 1,024 open files (AWS_ERROR_MAX_FDS_EXCEEDED, #60 follow-up).
+ulimit -n "$(ulimit -Hn)"
 log "role=$ROLE arch=$arch nixl=$NIXL_TAG prefix=$NIXL_PREFIX"
 if [[ -n $ADIT_SRC_S3 ]]; then
     miss=()
