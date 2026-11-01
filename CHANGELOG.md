@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`bench/results/paths-g298.csv` and `fetch-g298split.csv`: the #98 idle test and the #53 pair split** (us-east-1a, 2026-11-01).
+  - The idle test's served-then-idle arms failed (8.4, 7.5 and 4.5 min idle), each with an EFA provider abort under NIXL's progress thread. The control and the restarted-then-idle arm passed.
+  - In the pair split, production ran at 0.870 ± 0.013 of fetch-only.
 - **`hack/g2.sh` step `idle98`, a direct test of #98's hypothesis.** It runs one arm (default G2P01 on T2-256) four ways:
   - after the proxies have served a client and idled 7 min, twice;
   - as a control right after one of those;
