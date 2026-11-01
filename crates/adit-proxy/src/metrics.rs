@@ -60,6 +60,8 @@ pub struct Metrics {
     pub slot_hold_ns: AtomicU64,
     /// Slots held now (gauge), for sampling occupancy over time.
     pub slots_in_use: AtomicU64,
+    /// Registered agents retired for idleness when another agent registered (#98).
+    pub agents_retired: AtomicU64,
     /// Per chunk: waiting for a free slot, the ranged GET, waiting for a write permit, the write.
     pub h_slot_wait: Hist,
     pub h_fetch: Hist,
@@ -78,6 +80,8 @@ pub struct ConfigInfo {
     pub write_inflight: u64,
     pub meta_type: String,
     pub stub: bool,
+    /// Seconds idle after which an agent is retired when another registers (#98); 0 = never.
+    pub retire_idle_s: u64,
 }
 
 /// CPU seconds (user + system) of this process, from `/proc/self/stat`; `None` off Linux.
@@ -98,6 +102,12 @@ impl Metrics {
         };
         c(&mut o, "requests_total", "Object GETs served.", self.requests.load(Relaxed));
         c(&mut o, "requests_failed_total", "Object GETs answered 502.", self.requests_failed.load(Relaxed));
+        c(
+            &mut o,
+            "agents_retired_total",
+            "Idle agents retired when another agent registered (#98).",
+            self.agents_retired.load(Relaxed),
+        );
         c(&mut o, "chunks_ok_total", "Chunks fetched and written.", self.chunks_ok.load(Relaxed));
         c(&mut o, "chunks_failed_total", "Chunks that failed fetch or write.", self.chunks_failed.load(Relaxed));
         c(&mut o, "bytes_fetched_total", "Payload bytes received from S3.", self.bytes_fetched.load(Relaxed));
@@ -139,7 +149,7 @@ impl Metrics {
         let _ = writeln!(
             o,
             "# HELP adit_proxy_config Configuration in force.\n# TYPE adit_proxy_config gauge\n\
-             adit_proxy_config{{backend=\"{}\",chunk_bytes=\"{}\",slots=\"{}\",throughput_target_gbps=\"{}\",max_connections=\"{}\",network_interfaces=\"{}\",write_inflight=\"{}\",meta_type=\"{}\",stub=\"{}\"}} 1",
+             adit_proxy_config{{backend=\"{}\",chunk_bytes=\"{}\",slots=\"{}\",throughput_target_gbps=\"{}\",max_connections=\"{}\",network_interfaces=\"{}\",write_inflight=\"{}\",meta_type=\"{}\",stub=\"{}\",retire_idle_s=\"{}\"}} 1",
             cfg.backend,
             cfg.chunk_bytes,
             cfg.slots,
@@ -148,7 +158,8 @@ impl Metrics {
             cfg.network_interfaces,
             cfg.write_inflight,
             cfg.meta_type,
-            cfg.stub
+            cfg.stub,
+            cfg.retire_idle_s
         );
         o
     }

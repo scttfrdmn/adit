@@ -31,6 +31,13 @@ pub trait RemoteWriter: Send + Sync + 'static {
         notif: Vec<u8>,
     ) -> BoxFuture<'a, Result<(), WriteError>>;
 
+    /// Forget a remote agent: drop its metadata (NIXL `invalidate_remote_md`), so its next write
+    /// is [`WriteError::UnknownAgent`] until it registers again. The proxy retires idle agents this
+    /// way (#98).
+    fn forget_agent(&self, _agent: &str) -> Result<(), WriteError> {
+        Ok(())
+    }
+
     /// Backend name for `/metrics` and results rows.
     fn backend(&self) -> &str;
 }

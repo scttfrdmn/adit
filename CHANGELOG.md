@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **adit-proxy retires idle client agents (#98).** When an agent registers, the proxy first invalidates the NIXL metadata (`invalidate_remote_md`) of every other agent that has been idle for at least `--retire-idle-agents-s` (default 60; 0 = never). An agent with a transfer in progress is never retired.
+  - **Why:** in the #98 idle test, a proxy that had served an earlier, exited client and then idled about 4 min failed its first writes to the next client, and that client aborted in the EFA provider (ai-dynamo/nixl#2505).
+  - **Read back:** `/metrics` reports `adit_proxy_agents_retired_total` and `retire_idle_s` in `adit_proxy_config`.
+- **adit-client registers again on `428`.** It keeps each agent's metadata, re-registers with the proxy that answered `428` (a retired agent), and retries the request once. `Client::reregistrations()` counts this, and adit-get's notes report it as `reregistrations=`.
 - **`bench/results/paths-g298.csv` and `fetch-g298split.csv`: the #98 idle test and the #53 pair split** (us-east-1a, 2026-11-01).
   - The idle test's served-then-idle arms failed (8.4, 7.5 and 4.5 min idle), each with an EFA provider abort under NIXL's progress thread. The control and the restarted-then-idle arm passed.
   - In the pair split, production ran at 0.870 ± 0.013 of fetch-only.

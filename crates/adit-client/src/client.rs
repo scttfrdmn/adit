@@ -8,9 +8,10 @@
 //! else is [`GetError::Partial`] carrying what is covered and what is missing: a partial buffer is
 //! reported, never silently returned.
 
+use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use adit_fetch::stripe;
@@ -86,6 +87,11 @@ pub struct Client {
     next_req: AtomicU64,
     pump: tokio::task::JoinHandle<()>,
     extra_pumps: Vec<tokio::task::JoinHandle<()>>,
+    /// Each agent's metadata as last registered, to register again with a proxy that retired it
+    /// (`428`; #98).
+    metadata: Mutex<HashMap<String, Vec<u8>>>,
+    /// Re-registrations after a `428`, over the client's life.
+    reregistrations: AtomicU64,
 }
 
 impl Drop for Client {
@@ -133,6 +139,8 @@ impl Client {
             next_req: AtomicU64::new(seed),
             pump,
             extra_pumps: vec![],
+            metadata: Mutex::default(),
+            reregistrations: AtomicU64::new(0),
         })
     }
 
@@ -218,20 +226,40 @@ impl Client {
     }
 
     async fn register_as(&self, agent: &str, metadata: &[u8]) -> Result<(), GetError> {
+        self.metadata.lock().unwrap().insert(agent.to_string(), metadata.to_vec());
         for p in &self.cfg.proxies {
-            let url = format!("{p}{}/{}", proto::AGENTS_PATH, agent);
-            let r = self.http.put(&url).body(metadata.to_vec()).send().await;
-            match r {
-                Ok(r) if r.status().is_success() => {}
-                Ok(r) => {
-                    let status = r.status();
-                    let body = r.text().await.unwrap_or_default();
-                    return Err(GetError::Register { proxy: p.clone(), msg: format!("{status}: {body}") });
-                }
-                Err(e) => return Err(GetError::Register { proxy: p.clone(), msg: e.to_string() }),
-            }
+            self.register_with(p, agent, metadata).await?;
         }
         Ok(())
+    }
+
+    async fn register_with(&self, proxy: &str, agent: &str, metadata: &[u8]) -> Result<(), GetError> {
+        let url = format!("{proxy}{}/{}", proto::AGENTS_PATH, agent);
+        match self.http.put(&url).body(metadata.to_vec()).send().await {
+            Ok(r) if r.status().is_success() => Ok(()),
+            Ok(r) => {
+                let status = r.status();
+                let body = r.text().await.unwrap_or_default();
+                Err(GetError::Register { proxy: proxy.to_string(), msg: format!("{status}: {body}") })
+            }
+            Err(e) => Err(GetError::Register { proxy: proxy.to_string(), msg: e.to_string() }),
+        }
+    }
+
+    /// Register `agent` again with `proxy`, which answered `428` (it retired the agent while idle,
+    /// #98). False if the metadata is unknown or the proxy refuses it.
+    async fn reregister(&self, proxy: &str, agent: &str) -> bool {
+        let Some(md) = self.metadata.lock().unwrap().get(agent).cloned() else { return false };
+        let ok = self.register_with(proxy, agent, &md).await.is_ok();
+        if ok {
+            self.reregistrations.fetch_add(1, Relaxed);
+        }
+        ok
+    }
+
+    /// Re-registrations after a proxy answered `428`, over the client's life (#98).
+    pub fn reregistrations(&self) -> u64 {
+        self.reregistrations.load(Relaxed)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -246,18 +274,26 @@ impl Client {
         dest_offset: u64,
         req: u64,
     ) -> StripeAnswer {
-        let r = self
-            .http
-            .get(format!("{proxy}/{path}"))
-            .header(proto::H_PRESIGNED_URL, url)
-            .header(proto::H_AGENT, agent)
-            .header(proto::H_DEST, dest.to_string())
-            .header(proto::H_DEST_OFFSET, dest_offset.to_string())
-            .header(proto::H_RANGE, proto::format_range(&range))
-            .header(proto::H_REQUEST_ID, req.to_string())
-            .header(proto::H_CHUNK, self.cfg.chunk.to_string())
-            .send()
-            .await;
+        let send = || {
+            self.http
+                .get(format!("{proxy}/{path}"))
+                .header(proto::H_PRESIGNED_URL, url)
+                .header(proto::H_AGENT, agent)
+                .header(proto::H_DEST, dest.to_string())
+                .header(proto::H_DEST_OFFSET, dest_offset.to_string())
+                .header(proto::H_RANGE, proto::format_range(&range))
+                .header(proto::H_REQUEST_ID, req.to_string())
+                .header(proto::H_CHUNK, self.cfg.chunk.to_string())
+                .send()
+        };
+        let mut r = send().await;
+        // A proxy that retired this agent while it idled (#98) answers 428 before writing
+        // anything: register again and send once more.
+        if matches!(&r, Ok(resp) if resp.status() == reqwest::StatusCode::PRECONDITION_REQUIRED)
+            && self.reregister(proxy, agent).await
+        {
+            r = send().await;
+        }
         let num = |r: &reqwest::Response, h: &str| -> u64 {
             r.headers().get(h).and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok()).unwrap_or(0)
         };
