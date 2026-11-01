@@ -136,7 +136,9 @@ box_run() {
     on "$box" "cat /tmp/g2-$name.out" >"$OUT/$name.out"
     # Results off the box after every step (law 7), in one call: in the #60 follow-up the client was
     # terminated by its cost-limit while collect was still copying files one by one.
-    [[ $box == "$CLIENT" ]] && on "$CLIENT" "cd /tmp && aws s3 sync --quiet . $RAW/client/ --exclude '*' --include 'g2-*.csv' --include 'g2-*.order' --include 'g2-*.cold' --include 'g2-*.out' --region $REGION && for d in /tmp/g2-*-snap; do [ -d \$d ] && aws s3 sync --quiet \$d $RAW/\$(basename \$d)/ --region $REGION; done; echo synced" | grep -q synced || log "$name: results not synced to the bucket"
+    # (if, not &&: with `[[ … ]] && on … || log` every proxy-side step logged a false "not synced".)
+    [[ $box == "$CLIENT" ]] || return 0
+    on "$CLIENT" "cd /tmp && aws s3 sync --quiet . $RAW/client/ --exclude '*' --include 'g2-*.csv' --include 'g2-*.order' --include 'g2-*.cold' --include 'g2-*.out' --region $REGION && for d in /tmp/g2-*-snap; do [ -d \$d ] && aws s3 sync --quiet \$d $RAW/\$(basename \$d)/ --region $REGION; done; echo synced" | grep -q synced || log "$name: results not synced to the bucket"
     log "$name: $(grep -E '^EXIT=|syntax error|command not found' "$OUT/$name.out" | head -2 | tr '\n' ' ')"
     push
 }
@@ -346,7 +348,7 @@ step_r98() {
     for p in "${PROXIES[@]}"; do
         on "$p" "tail -n +\$((\$(cat /tmp/r98-log0) + 1)) /tmp/proxy-base.out | sed 's/\x1b\[[0-9;]*m//g' | grep -E 'WARN|ERROR' | head -200" | sed "s/^/$p: /"
     done >"$OUT/r98-proxy-warn.txt"
-    log "r98: $(grep -c . "$OUT/r98-proxy-warn.txt") proxy warning lines; $(grep -c 'core\.' "$OUT/r98-client-kernel.txt") cores"
+    log "r98: $(grep -c . "$OUT/r98-proxy-warn.txt") proxy warning lines; $(grep -c '/var/tmp/core\.' "$OUT/r98-client-kernel.txt") cores"
     push
 }
 
@@ -374,7 +376,7 @@ step_idle98() {
         on "$p" "sed 's/\x1b\[[0-9;]*m//g' /tmp/proxy-i98a.out /tmp/proxy-i98b.out | grep -E 'WARN|ERROR' | head -100" | sed "s/^/$p: /"
     done >"$OUT/idle98-proxy-warn.txt"
     on "$CLIENT" "sudo dmesg -T | tail -n +\$((\$(cat /tmp/i98-dmesg0) + 1)) | grep -iE 'efa|rdmap|xid|segfault' | grep -v gdrdrv | tail -100; echo '# cores'; ls -la /var/tmp/core.* 2>/dev/null; echo '# core limit lines'; grep -h 'core limit' /tmp/g2-idle98-*.out 2>/dev/null | head -3" >"$OUT/idle98-client-kernel.txt"
-    log "idle98: $(grep -c . "$OUT/idle98-proxy-warn.txt") proxy warning lines; $(grep -c 'core\.' "$OUT/idle98-client-kernel.txt") cores"
+    log "idle98: $(grep -c . "$OUT/idle98-proxy-warn.txt") proxy warning lines; $(grep -c '/var/tmp/core\.' "$OUT/idle98-client-kernel.txt") cores"
     push
 }
 
