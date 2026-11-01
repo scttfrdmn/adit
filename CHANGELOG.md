@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`bench/results/paths-g261.csv` and `fetch-g261split.csv`: the #60 follow-up session** (us-east-1a, 2026-11-01). It has:
+  - the ladder at a fixed 64 objects per proxy (H-scale);
+  - the extended KvikIO grid with run 3's best point as an anchor (#54);
+  - B512 against E8 interleaved (H-ceiling);
+  - the #53 fetch-only arms.
+
+  Two rows have `oracle=partial` (#98). The r98 and pairsplit G1P0 rows were lost to the client's cost-limit termination; their rates are in the #60 report.
 - **`hack/stage-wheels.sh`, and the client's path tools offline.** Run on a box from the client AMI that has an internet route, `stage-wheels.sh`:
   - installs the same packages as `install.sh`'s pathtools stage;
   - downloads exactly those versions as wheels;
