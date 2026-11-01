@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`hack/g2.sh` step `idle98`, a direct test of #98's hypothesis.** It runs one arm (default G2P01 on T2-256) four ways:
+  - after the proxies have served a client and idled 7 min, twice;
+  - as a control right after one of those;
+  - after a proxy restart plus a 7 min idle (proxies that served no one);
+  - after serving and a 3 min idle.
+
+  Cores are kept and `FI_LOG_LEVEL=warn` is set; the proxies' WARN lines and the client's EFA kernel messages are captured.
 - **`bench/results/paths-g261.csv` and `fetch-g261split.csv`: the #60 follow-up session** (us-east-1a, 2026-11-01). It has:
   - the ladder at a fixed 64 objects per proxy (H-scale);
   - the extended KvikIO grid with run 3's best point as an anchor (#54);

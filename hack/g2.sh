@@ -27,6 +27,9 @@
 #   r98       #98 reproduction: E<N> on T2 R98_RUNS times (default 10) with adit-get core dumps kept
 #             and libfabric warnings (FI_LOG_LEVEL), then the client's EFA kernel messages and the
 #             proxies' failed-transfer warnings
+#   idle98    #98 hypothesis test: IDLE98_ARM (G2P01) on T2-256 after serving + idling IDLE98_LONG_S
+#             (420), as a control right after, after a restart + idle (unserved), and after a short
+#             idle IDLE98_SHORT_S (180); cores kept, FI_LOG_LEVEL=warn
 #   pairsplit #53 localization on proxy 0 / GPU 0, rotated per cycle (SPLIT_CYCLES, default 3):
 #             fetch-only (adit-fetch-bench, adit-proxy stopped) vs G1P0 with proxy 0's per-thread
 #             CPU sampled; then one G1P0 under perf record. Write-only is the health probe.
@@ -344,6 +347,34 @@ step_r98() {
         on "$p" "tail -n +\$((\$(cat /tmp/r98-log0) + 1)) /tmp/proxy-base.out | sed 's/\x1b\[[0-9;]*m//g' | grep -E 'WARN|ERROR' | head -200" | sed "s/^/$p: /"
     done >"$OUT/r98-proxy-warn.txt"
     log "r98: $(grep -c . "$OUT/r98-proxy-warn.txt") proxy warning lines; $(grep -c 'core\.' "$OUT/r98-client-kernel.txt") cores"
+    push
+}
+
+step_idle98() {
+    # #98: does a proxy that served an earlier (now exited) client agent and then sat idle for more
+    # than ~5 min fail its first writes to the next agent? One adit-get per arm, in this order:
+    #   serve0; idle L; A1 (served, idle L); control (immediate); idle L; A2 (served, idle L);
+    #   restart the proxies; idle L; B (unserved, idle L); serve1; idle S; C (served, idle S).
+    # Expected under the hypothesis: A1 and A2 fail, the control, B and C do not. The idle a proxy
+    # saw is sleep + client_run's polling slack; the arms' start times are in g2-idle98.order.
+    local arm=${IDLE98_ARM:-G2P01} L=${IDLE98_LONG_S:-420} S=${IDLE98_SHORT_S:-180} n=0 p
+    on "$CLIENT" "sudo sysctl -qw kernel.core_pattern=/var/tmp/core.%e.%p.%t; sudo dmesg | wc -l >/tmp/i98-dmesg0" >/dev/null
+    i98_arm() {
+        n=$((n + 1))
+        log "idle98: $1 ($arm)"
+        client_run "idle98-$n-$1" "PLAN=/tmp/t2-256-plan.jsonl PROXIES=$URLS ARMS=$arm CYCLES=1 CYCLE_BASE=$((n - 1)) CORES=1 FI_LOG_LEVEL=warn DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY OUT=/tmp/g2-idle98.csv bash bench/paths/interleave.sh T2-256"
+    }
+    i98_idle() { log "idle98: idle ${1}s"; sleep "$1"; }
+    start_proxies "$PROXY_ARGS" i98a
+    i98_arm serve0; i98_idle "$L"; i98_arm A1-served-idle; i98_arm control; i98_idle "$L"; i98_arm A2-served-idle
+    start_proxies "$PROXY_ARGS" i98b
+    i98_idle "$L"; i98_arm B-unserved-idle
+    i98_arm serve1; i98_idle "$S"; i98_arm C-served-short
+    for p in "${PROXIES[@]}"; do
+        on "$p" "sed 's/\x1b\[[0-9;]*m//g' /tmp/proxy-i98a.out /tmp/proxy-i98b.out | grep -E 'WARN|ERROR' | head -100" | sed "s/^/$p: /"
+    done >"$OUT/idle98-proxy-warn.txt"
+    on "$CLIENT" "sudo dmesg -T | tail -n +\$((\$(cat /tmp/i98-dmesg0) + 1)) | grep -iE 'efa|rdmap|xid|segfault' | grep -v gdrdrv | tail -100; echo '# cores'; ls -la /var/tmp/core.* 2>/dev/null; echo '# core limit lines'; grep -h 'core limit' /tmp/g2-idle98-*.out 2>/dev/null | head -3" >"$OUT/idle98-client-kernel.txt"
+    log "idle98: $(grep -c . "$OUT/idle98-proxy-warn.txt") proxy warning lines; $(grep -c 'core\.' "$OUT/idle98-client-kernel.txt") cores"
     push
 }
 
