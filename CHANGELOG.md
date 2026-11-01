@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`hack/g2.sh` no longer logs a false "results not synced"** for proxy-side steps (an `&&`/`||` chain in `box_run`), and its idle98 and r98 core counts count core files only. Both were wrong in the #98 idle-test session.
 - **`hack/g2.sh` streams the client's results to the bucket after every step,** in one sync, and `collect` fetches them from there. In the #60 follow-up, the client's cost-limit terminated it while `collect` was still copying files one at a time over spawn connect, and the r98 and pairsplit rows were lost.
 - **`bench/paths/interleave.sh` `CORES=1` raises the hard core limit with `prlimit`** before `ulimit -c`. bgrun's hard limit is 0, so the first r98 run could keep no core. It now logs the limits it got.
 - **`hack/g2.sh` pairsplit stops the thread sampler with `pkill -f '[t]hreadcpu.sh'`.** The plain pattern matched the stopping command's own shell, so the samples never left the box.
