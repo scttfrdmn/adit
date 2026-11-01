@@ -373,7 +373,7 @@ step_pairsplit() {
                 # Thread samples are megabytes: off the box through the bucket, not spawn connect
                 # (SSM output is bounded). The bracket keeps pkill -f from matching this command's own
                 # shell (it did in the #60 follow-up, and the samples never left the box).
-                on "$p0" "pkill -f "[t]hreadcpu.sh"; gzip -f /tmp/ps-threads-c$c.txt && aws s3 cp --only-show-errors /tmp/ps-threads-c$c.txt.gz $RAW/pairsplit-threads-c$c.txt.gz --region $REGION" >/dev/null
+                on "$p0" "pkill -f '[t]hreadcpu.sh'; gzip -f /tmp/ps-threads-c$c.txt && aws s3 cp --only-show-errors /tmp/ps-threads-c$c.txt.gz $RAW/pairsplit-threads-c$c.txt.gz --region $REGION" >/dev/null
                 AWS_PROFILE=${AWS_PROFILE-aws} aws s3 cp --only-show-errors "$RAW/pairsplit-threads-c$c.txt.gz" "$OUT/" --region "$REGION"
             fi
         done
