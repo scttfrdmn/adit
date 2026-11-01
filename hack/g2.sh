@@ -131,6 +131,9 @@ box_run() {
         (( SECONDS - t0 > ${STEP_TIMEOUT:-3600} )) && { log "$name: still running after ${STEP_TIMEOUT:-3600}s; leaving it"; break; }
     done
     on "$box" "cat /tmp/g2-$name.out" >"$OUT/$name.out"
+    # Results off the box after every step (law 7), in one call: in the #60 follow-up the client was
+    # terminated by its cost-limit while collect was still copying files one by one.
+    [[ $box == "$CLIENT" ]] && on "$CLIENT" "cd /tmp && aws s3 sync --quiet . $RAW/client/ --exclude '*' --include 'g2-*.csv' --include 'g2-*.order' --include 'g2-*.cold' --include 'g2-*.out' --region $REGION && for d in /tmp/g2-*-snap; do [ -d \$d ] && aws s3 sync --quiet \$d $RAW/\$(basename \$d)/ --region $REGION; done; echo synced" | grep -q synced || log "$name: results not synced to the bucket"
     log "$name: $(grep -E '^EXIT=|syntax error|command not found' "$OUT/$name.out" | head -2 | tr '\n' ' ')"
     push
 }
@@ -368,8 +371,9 @@ step_pairsplit() {
                 on "$p0" "bgrun -o /tmp/ps-tc-c$c.out bash $REPO/bench/paths/threadcpu.sh \$(pgrep -x adit-proxy) /tmp/ps-threads-c$c.txt 1" >/dev/null
                 client_run "pairsplit-c$c-e1" "PLAN=/tmp/t2-plan.jsonl PROXIES=$URLS ARMS=G1P0 CYCLES=1 CYCLE_BASE=$((c - 1)) DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$objs OUT=/tmp/g2-pairsplit.csv bash bench/paths/interleave.sh T2"
                 # Thread samples are megabytes: off the box through the bucket, not spawn connect
-                # (SSM output is bounded).
-                on "$p0" "pkill -f threadcpu.sh; gzip -f /tmp/ps-threads-c$c.txt && aws s3 cp --only-show-errors /tmp/ps-threads-c$c.txt.gz $RAW/pairsplit-threads-c$c.txt.gz --region $REGION" >/dev/null
+                # (SSM output is bounded). The bracket keeps pkill -f from matching this command's own
+                # shell (it did in the #60 follow-up, and the samples never left the box).
+                on "$p0" "pkill -f '[t]hreadcpu.sh'; gzip -f /tmp/ps-threads-c$c.txt && aws s3 cp --only-show-errors /tmp/ps-threads-c$c.txt.gz $RAW/pairsplit-threads-c$c.txt.gz --region $REGION" >/dev/null
                 AWS_PROFILE=${AWS_PROFILE-aws} aws s3 cp --only-show-errors "$RAW/pairsplit-threads-c$c.txt.gz" "$OUT/" --region "$REGION"
             fi
         done
@@ -384,17 +388,16 @@ step_pairsplit() {
 }
 
 step_collect() {
-    for f in confirm50 ladder csweep csweep-c128 csweep-c256 csweep-c512 slotcmp-s2048 slotcmp-s4096 sweep t1 ceiling bsweep pairs pairslots-s2048 pairslots-s4096 pairbind-unbound pairbind-bound pairbind-bound2r r98 pairsplit pairsplit-perf; do
-        on "$CLIENT" "test -f /tmp/g2-$f.csv && cat /tmp/g2-$f.csv" >"$OUT/g2-$f.csv"
-        on "$CLIENT" "test -f /tmp/g2-$f.order && cat /tmp/g2-$f.order" >"$OUT/g2-$f.order"
-        # One drop_caches status line per cold rung (#70).
-        on "$CLIENT" "test -f /tmp/g2-$f.cold && cat /tmp/g2-$f.cold" >"$OUT/g2-$f.cold"
-    done
+    # Every step already synced the client's results to $RAW/client/ (box_run); fetch them from the
+    # bucket (one sync, not three spawn connects per file). The .cold files hold one drop_caches
+    # status line per cold rung (#70).
+    on "$CLIENT" "cd /tmp && aws s3 sync --quiet . $RAW/client/ --exclude '*' --include 'g2-*.csv' --include 'g2-*.order' --include 'g2-*.cold' --region $REGION; echo synced" | tee -a "$OUT/run.log"
+    AWS_PROFILE=${AWS_PROFILE-aws} aws s3 sync --quiet "$RAW/client/" "$OUT/" --exclude '*' --include 'g2-*.csv' --include 'g2-*.order' --include 'g2-*.cold' --region "$REGION"
     for k in "${!PIPS[@]}"; do
         on "$CLIENT" "curl -s http://${PIPS[$k]}:8480/metrics" >"$OUT/metrics-${PROXIES[$k]}.txt"
     done
     # Per-arm snapshots (interleave.sh) go straight from the client to the bench bucket.
-    on "$CLIENT" "for d in /tmp/g2-*-snap; do [ -d \$d ] && aws s3 cp --recursive --quiet \$d s3://$BUCKET/adit/g2/$(basename "$OUT")/\$(basename \$d)/ --region $REGION; done; ls -d /tmp/g2-*-snap 2>/dev/null | wc -l" | sed 's/^/snapshot dirs pushed: /' | tee -a "$OUT/run.log"
+    on "$CLIENT" "for d in /tmp/g2-*-snap; do [ -d \$d ] && aws s3 sync --quiet \$d $RAW/\$(basename \$d)/ --region $REGION; done; ls -d /tmp/g2-*-snap 2>/dev/null | wc -l" | sed 's/^/snapshot dirs pushed: /' | tee -a "$OUT/run.log"
     on "$CLIENT" "cat /var/lib/adit/versions; nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv" >"$OUT/client-versions.txt"
     ls -la "$OUT" | tee -a "$OUT/run.log"
 }

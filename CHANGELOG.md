@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`hack/g2.sh` streams the client's results to the bucket after every step,** in one sync, and `collect` fetches them from there. In the #60 follow-up, the client's cost-limit terminated it while `collect` was still copying files one at a time over spawn connect, and the r98 and pairsplit rows were lost.
+- **`bench/paths/interleave.sh` `CORES=1` raises the hard core limit with `prlimit`** before `ulimit -c`. bgrun's hard limit is 0, so the first r98 run could keep no core. It now logs the limits it got.
+- **`hack/g2.sh` pairsplit stops the thread sampler with `pkill -f '[t]hreadcpu.sh'`.** The plain pattern matched the stopping command's own shell, so the samples never left the box.
 - **`hack/install.sh` raises its open-files limit to the hard limit.** On a p5en, fetching the 3 GB wheelhouse with the AWS CLI exceeded the default 1,024 files (`AWS_ERROR_MAX_FDS_EXCEEDED`).
 - **`hack/g2.sh` and `hack/fetchprobe.sh` drop spawn's SSM banner lines** (`… no public IP (private only) …`, `… via SSM RunCommand …`) from captured output. In #60 they reached the results CSVs.
 - **`bench/paths/fetchprobe.sh` samples once a second for the whole arm** (#79). It records the bench's socket fds, threads by name, and per-thread CPU (`pidstat` for the whole arm), and profiled arms run the whole bench under `perf record`. Polling `ss` with thousands of sockets was slower than an arm, so the earlier readback and profile came back empty.
