@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The control endpoint.
 //!
-//! - `PUT /_adit/agents/{name}`: body is the client's NIXL agent metadata; loaded once.
+//! - `PUT /_adit/agents/{name}`: body is the client's NIXL agent metadata; loaded once. With
+//!   [`App::retire_idle`] set, registering an agent first retires every other agent idle that long
+//!   (#98); a retired agent's requests get `428` until it registers again.
 //! - `GET /{bucket}/{key}` with the `x-adit-*` headers (see `adit-proto`): runs one transfer and
 //!   answers with no body: `200` when every chunk was written, `502` with the failed ranges
 //!   otherwise. `400` for malformed headers, `428` if the agent has not registered.
 //! - `GET /metrics`: Prometheus text, including the configuration in force.
 
-use std::sync::Arc;
+use std::collections::HashMap;
 use std::sync::atomic::Ordering::Relaxed;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use adit_fetch::RangeSource;
 use adit_proto as proto;
@@ -31,6 +35,80 @@ pub struct App {
     pub config: ConfigInfo,
     /// Cap on outstanding RDMA writes across all transfers; `None` = one per slot.
     pub write_inflight: Option<tokio::sync::Semaphore>,
+    /// Retire registered agents idle at least this long whenever another agent registers (#98: an
+    /// initiator that had served an earlier, exited client and then idled about 4 min failed its
+    /// first writes to the next client, and the client aborted in the EFA provider). `None`
+    /// keeps every agent.
+    pub retire_idle: Option<Duration>,
+    /// Registered agents' last activity and transfers in progress.
+    pub agents: Agents,
+}
+
+/// Last activity and in-progress transfers per registered agent. An agent is idle once its last
+/// transfer has finished; one with a transfer in progress is never retired.
+#[derive(Default)]
+pub struct Agents(Mutex<HashMap<String, AgentUse>>);
+
+struct AgentUse {
+    last: Instant,
+    active: usize,
+}
+
+/// One transfer for `agent` in progress; dropping it ends the transfer and stamps its time.
+struct Active<'a> {
+    agents: &'a Agents,
+    agent: String,
+}
+
+impl Drop for Active<'_> {
+    fn drop(&mut self) {
+        if let Some(u) = self.agents.0.lock().unwrap().get_mut(&self.agent) {
+            u.active -= 1;
+            u.last = Instant::now();
+        }
+    }
+}
+
+impl App {
+    /// Record `agent` as registered now, first retiring every other agent idle for at least
+    /// [`App::retire_idle`]. Returns the agents retired.
+    fn registered(&self, agent: &str) -> Vec<String> {
+        let mut m = self.agents.0.lock().unwrap();
+        let now = Instant::now();
+        let mut retired = vec![];
+        if let Some(after) = self.retire_idle {
+            let idle: Vec<String> = m
+                .iter()
+                .filter(|(n, u)| n.as_str() != agent && u.active == 0 && now.duration_since(u.last) >= after)
+                .map(|(n, _)| n.clone())
+                .collect();
+            for n in idle {
+                match self.writer.forget_agent(&n) {
+                    Ok(()) => {
+                        m.remove(&n);
+                        self.metrics.agents_retired.fetch_add(1, Relaxed);
+                        retired.push(n);
+                    }
+                    Err(e) => tracing::warn!(agent = n, error = %e, "could not retire idle agent"),
+                }
+            }
+        }
+        m.entry(agent.to_string()).or_insert(AgentUse { last: now, active: 0 }).last = now;
+        retired
+    }
+
+    /// Start a transfer for `agent`, or `None` if it is not registered (or was retired). Checked
+    /// under the same lock as retirement, so an agent is never retired with a transfer starting.
+    fn begin(&self, agent: &str) -> Option<Active<'_>> {
+        let mut m = self.agents.0.lock().unwrap();
+        if !self.writer.knows(agent) {
+            return None;
+        }
+        let u = m.entry(agent.to_string()).or_insert(AgentUse { last: Instant::now(), active: 0 });
+        u.active += 1;
+        u.last = Instant::now();
+        Some(Active { agents: &self.agents, agent: agent.to_string() })
+    }
 }
 
 pub fn router(app: Arc<App>) -> Router {
@@ -55,7 +133,13 @@ async fn metrics(State(app): State<Arc<App>>) -> String {
 
 async fn register(State(app): State<Arc<App>>, Path(name): Path<String>, body: Bytes) -> Response<Body> {
     match app.writer.load_agent(&body) {
-        Ok(loaded) if loaded == name => reply(StatusCode::NO_CONTENT, &[], Body::empty()),
+        Ok(loaded) if loaded == name => {
+            let retired = app.registered(&name);
+            if !retired.is_empty() {
+                tracing::info!(agent = name, ?retired, "retired idle agents");
+            }
+            reply(StatusCode::NO_CONTENT, &[], Body::empty())
+        }
         Ok(loaded) => {
             reply(StatusCode::BAD_REQUEST, &[], format!("metadata is for agent {loaded:?}, path says {name:?}"))
         }
@@ -91,10 +175,10 @@ async fn transfer(State(app): State<Arc<App>>, Path(path): Path<String>, h: Head
             return reply(StatusCode::BAD_REQUEST, &[], e);
         }
     };
-    if !app.writer.knows(&t.agent) {
+    let Some(_active) = app.begin(&t.agent) else {
         app.metrics.requests_failed.fetch_add(1, Relaxed);
         return reply(StatusCode::PRECONDITION_REQUIRED, &[], format!("agent {:?} not registered", t.agent));
-    }
+    };
     let out = pipeline::run_bounded(
         &t,
         app.source.as_ref(),

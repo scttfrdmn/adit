@@ -70,6 +70,8 @@ impl Proxy {
                     writer: Arc::new(lb),
                     pool: Arc::new(Pool::new(slots, MIB as usize)),
                     write_inflight: None,
+                    retire_idle: None,
+                    agents: Default::default(),
                     metrics: Metrics::default(),
                     config: ConfigInfo {
                         backend: "loopback".into(),
@@ -81,6 +83,7 @@ impl Proxy {
                         write_inflight: 0,
                         meta_type: "Default".into(),
                         stub: true,
+                        retire_idle_s: 0,
                     },
                 });
                 let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -309,4 +312,23 @@ async fn overrun_is_refused_before_any_io() {
     let e = r.client.get("bench/z", &r.s3.url("bench/z"), 0..MIB, 1).await.unwrap_err();
     assert!(matches!(e, GetError::Invalid(_)), "{e:?}");
     assert_eq!(r.s3.requests(), 0);
+}
+
+/// #98: a proxy that retired the client's agent while it idled answers 428; the client registers
+/// again and the get completes byte-identical, with the re-registration counted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retired_agent_registers_again_and_completes() {
+    use adit_proxy::writer::RemoteWriter;
+    let n = 3 * MIB as usize + 11;
+    let r = rig(n, 1, false, 1).await;
+    let data = bytes(n, 98);
+    r.s3.put("bench/r98", data.clone());
+    let m = manifest("bench/r98", &data, MIB);
+    r.client.get("bench/r98", &r.s3.url("bench/r98"), 0..n as u64, 0).await.unwrap();
+    assert!(r.check(&m, 0));
+    r.zero();
+    r.lb.forget_agent("gpu0").unwrap();
+    r.client.get("bench/r98", &r.s3.url("bench/r98"), 0..n as u64, 0).await.unwrap();
+    assert!(r.check(&m, 0));
+    assert_eq!(r.client.reregistrations(), 1);
 }

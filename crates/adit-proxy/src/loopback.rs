@@ -72,6 +72,11 @@ impl RemoteWriter for Arc<Loopback> {
         self.known.lock().unwrap().contains(agent)
     }
 
+    fn forget_agent(&self, agent: &str) -> Result<(), WriteError> {
+        self.known.lock().unwrap().remove(agent);
+        Ok(())
+    }
+
     fn write<'a>(
         &'a self,
         src: &'a [u8],

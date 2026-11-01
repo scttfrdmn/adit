@@ -392,6 +392,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .push(format!("placement={placement} nic_placed_bytes={}", placed.map_or("n/a".into(), |p| p.to_string())));
         notes.push(format!("host_cpu_ticks_s={host_ticks:.2}"));
         notes.push(completion_note(&mut lag_ms, &wave_ms, &tail_ms));
+        // Proxies that had retired an idle agent answer 428 and the client registers again (#98).
+        notes.push(format!("reregistrations={}", client.reregistrations()));
         if !rails.is_empty() {
             notes.push(format!("rails={}", adit_client::counters::rails_note(&rails)));
         }

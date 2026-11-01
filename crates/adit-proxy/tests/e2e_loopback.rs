@@ -31,12 +31,18 @@ fn bytes(n: usize, seed: u64) -> Vec<u8> {
 }
 
 async fn proxy(lb: &Arc<Loopback>, attempts: u32, slots: usize) -> String {
+    proxy_retiring(lb, attempts, slots, None).await
+}
+
+async fn proxy_retiring(lb: &Arc<Loopback>, attempts: u32, slots: usize, retire_idle: Option<Duration>) -> String {
     let src = Retrying::new(CrtSource::new(&CrtConfig::default()).unwrap(), attempts, Duration::from_millis(5));
     let app = Arc::new(App {
         source: Arc::new(src),
         writer: Arc::new(lb.clone()),
         pool: Arc::new(Pool::new(slots, MIB as usize)),
         write_inflight: None,
+        retire_idle,
+        agents: Default::default(),
         metrics: Metrics::default(),
         config: ConfigInfo {
             backend: "loopback".into(),
@@ -48,6 +54,7 @@ async fn proxy(lb: &Arc<Loopback>, attempts: u32, slots: usize) -> String {
             write_inflight: 0,
             meta_type: "Default".into(),
             stub: true,
+            retire_idle_s: retire_idle.map_or(0, |d| d.as_secs()),
         },
     });
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -248,4 +255,47 @@ async fn slot_occupancy_is_released_and_hold_time_counted() {
     assert_eq!(f.get(&p, 0..n, 0, 12).await.status(), 502);
     let m = f.http.get(format!("{p}/metrics")).send().await.unwrap().text().await.unwrap();
     assert_eq!(metric(&m, "adit_proxy_slots_in_use "), 0);
+}
+
+/// #98: registering a new agent retires every other agent idle at least `retire_idle`, whose
+/// requests then get 428 until it registers again; an agent idle for less is kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn idle_agents_are_retired_when_another_registers() {
+    let mut f = fixture(MIB as usize).await;
+    let (_t2, _rx2) = f.lb.target("client2", MIB as usize, BASE);
+    let p = proxy_retiring(&f.lb, 1, 2, Some(Duration::from_millis(200))).await;
+    let (http, pc) = (f.http.clone(), p.clone());
+    let put = |name: &'static str| {
+        let (http, p) = (http.clone(), pc.clone());
+        async move {
+            http.put(format!("{p}{}/{name}", proto::AGENTS_PATH))
+                .body(Loopback::metadata(name))
+                .send()
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+    f.register(&p).await;
+    assert_eq!(f.get(&p, 0..MIB, 0, 21).await.status(), 200);
+    f.drain(21);
+    // Idle for less than the threshold: a newcomer leaves the agent alone.
+    assert_eq!(put("client2").await, 204);
+    assert_eq!(f.get(&p, 0..MIB, 0, 22).await.status(), 200);
+    f.drain(22);
+    // Past it: client re-registering retires client2 (idle since its registration), never itself.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    f.register(&p).await;
+    let m = f.http.get(format!("{p}/metrics")).send().await.unwrap().text().await.unwrap();
+    assert_eq!(metric(&m, "adit_proxy_agents_retired_total "), 1, "{m}");
+    // client idles past it in turn; client2 registering retires it, and its next request is 428.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(put("client2").await, 204);
+    assert_eq!(f.get(&p, 0..MIB, 0, 23).await.status(), 428);
+    f.register(&p).await;
+    assert_eq!(f.get(&p, 0..MIB, 0, 24).await.status(), 200);
+    assert!(f.drain(24).is_complete(0..MIB));
+    let m = f.http.get(format!("{p}/metrics")).send().await.unwrap().text().await.unwrap();
+    assert_eq!(metric(&m, "adit_proxy_agents_retired_total "), 2, "{m}");
+    assert!(m.contains("retire_idle_s=\"0\""), "{m}");
 }

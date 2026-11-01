@@ -56,6 +56,11 @@ struct Args {
     /// Cap on outstanding RDMA writes (0 = one per slot). See #18.
     #[arg(long, default_value_t = 0)]
     write_inflight: usize,
+    /// Retire agents idle this many seconds when another agent registers (0 = never). #98: the
+    /// first writes to a new client failed when the proxy had served an earlier one and then
+    /// idled about 4 min; the earlier client's metadata is invalidated before that.
+    #[arg(long, default_value_t = 60)]
+    retire_idle_agents_s: u64,
 }
 
 #[tokio::main]
@@ -95,8 +100,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             write_inflight: a.write_inflight as u64,
             meta_type: format!("{:?}", a.meta_type),
             stub: false,
+            retire_idle_s: a.retire_idle_agents_s,
         },
         write_inflight: (a.write_inflight > 0).then(|| tokio::sync::Semaphore::new(a.write_inflight)),
+        retire_idle: (a.retire_idle_agents_s > 0).then(|| Duration::from_secs(a.retire_idle_agents_s)),
+        agents: Default::default(),
     });
     let listener = tokio::net::TcpListener::bind(&a.listen).await?;
     tracing::info!(listen = a.listen, agent = name, backend = a.backend, chunk, slots = a.slots, "adit-proxy serving");
