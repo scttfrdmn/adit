@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`hack/install.sh` raises its open-files limit to the hard limit.** On a p5en, fetching the 3 GB wheelhouse with the AWS CLI exceeded the default 1,024 files (`AWS_ERROR_MAX_FDS_EXCEEDED`).
 - **`hack/g2.sh` and `hack/fetchprobe.sh` drop spawn's SSM banner lines** (`… no public IP (private only) …`, `… via SSM RunCommand …`) from captured output. In #60 they reached the results CSVs.
 - **`bench/paths/fetchprobe.sh` samples once a second for the whole arm** (#79). It records the bench's socket fds, threads by name, and per-thread CPU (`pidstat` for the whole arm), and profiled arms run the whole bench under `perf record`. Polling `ss` with thousands of sockets was slower than an arm, so the earlier readback and profile came back empty.
 - **`bench/paths/fetchprobe.sh` readback and profiling wait for the bench's first S3 socket.** In the first fetch-CPU run, both sampled the slot-pool allocation instead of the transfer.
