@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A NIXL-only reproducer for #98 / ai-dynamo/nixl#2505: `adit-nixl-probe-init --idle-before 300,0,300` and `hack/repro98.sh`.** One long-lived initiator agent (host DRAM) writes to a sequence of fresh target processes (VRAM, a new agent each), idling before each further round. There is no S3, HTTP or adit-proxy involved. A failed round is reported per round (`ROUND k … PASS|FAIL`), and the exit status is non-zero if any round failed. The NIXL team asked for a script to reproduce the issue.
 - **`bench/results/paths-g2108.csv`: the PR #108 validation run of the #98 idle test** (us-east-1a, 2026-11-06). Idle-agent retirement fired before every arm after the first, yet the served-then-idle arms (A1, A2, C) still failed. Invalidating departed agents' metadata does not prevent #98.
 - **adit-proxy retires idle client agents (#98).** When an agent registers, the proxy first invalidates the NIXL metadata (`invalidate_remote_md`) of every other agent that has been idle for at least `--retire-idle-agents-s` (default 60; 0 = never). An agent with a transfer in progress is never retired.
   - **Why:** in the #98 idle test, a proxy that had served an earlier, exited client and then idled about 4 min failed its first writes to the next client, and that client aborted in the EFA provider (ai-dynamo/nixl#2505).
