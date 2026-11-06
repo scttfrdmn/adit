@@ -35,6 +35,16 @@ async fn proxy(lb: &Arc<Loopback>, attempts: u32, slots: usize) -> String {
 }
 
 async fn proxy_retiring(lb: &Arc<Loopback>, attempts: u32, slots: usize, retire_idle: Option<Duration>) -> String {
+    proxy_cfg(lb, attempts, slots, retire_idle, None).await
+}
+
+async fn proxy_cfg(
+    lb: &Arc<Loopback>,
+    attempts: u32,
+    slots: usize,
+    retire_idle: Option<Duration>,
+    recycle_idle: Option<Duration>,
+) -> String {
     let src = Retrying::new(CrtSource::new(&CrtConfig::default()).unwrap(), attempts, Duration::from_millis(5));
     let app = Arc::new(App {
         source: Arc::new(src),
@@ -42,6 +52,7 @@ async fn proxy_retiring(lb: &Arc<Loopback>, attempts: u32, slots: usize, retire_
         pool: Arc::new(Pool::new(slots, MIB as usize)),
         write_inflight: None,
         retire_idle,
+        recycle_idle,
         agents: Default::default(),
         metrics: Metrics::default(),
         config: ConfigInfo {
@@ -55,6 +66,7 @@ async fn proxy_retiring(lb: &Arc<Loopback>, attempts: u32, slots: usize, retire_
             meta_type: "Default".into(),
             stub: true,
             retire_idle_s: retire_idle.map_or(0, |d| d.as_secs()),
+            recycle_idle_s: recycle_idle.map_or(0, |d| d.as_secs()),
         },
     });
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -298,4 +310,47 @@ async fn idle_agents_are_retired_when_another_registers() {
     let m = f.http.get(format!("{p}/metrics")).send().await.unwrap().text().await.unwrap();
     assert_eq!(metric(&m, "adit_proxy_agents_retired_total "), 2, "{m}");
     assert!(m.contains("retire_idle_s=\"0\""), "{m}");
+}
+
+/// #98: a newcomer registering after the proxy served an agent and then idled `recycle_idle`
+/// recreates the transport first: every agent is forgotten (428 until it registers again) and the
+/// recycle is counted. A fresh proxy, or one recently active, is not recycled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn transport_is_recycled_after_idle_before_a_newcomer() {
+    let mut f = fixture(MIB as usize).await;
+    let (_t2, _rx2) = f.lb.target("client2", MIB as usize, BASE);
+    let p = proxy_cfg(&f.lb, 1, 2, None, Some(Duration::from_millis(200))).await;
+    let (http, pc) = (f.http.clone(), p.clone());
+    let put = |name: &'static str| {
+        let (http, p) = (http.clone(), pc.clone());
+        async move {
+            http.put(format!("{p}{}/{name}", proto::AGENTS_PATH))
+                .body(Loopback::metadata(name))
+                .send()
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+    let recycled = |m: &str| metric(m, "adit_proxy_transport_recycled_total ");
+    // Fresh proxy: nothing served yet, so no recycle however long it idled.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    f.register(&p).await;
+    assert_eq!(f.get(&p, 0..MIB, 0, 31).await.status(), 200);
+    f.drain(31);
+    // Served and still recent: a newcomer loads with no recycle.
+    assert_eq!(put("client2").await, 204);
+    let m = f.http.get(format!("{p}/metrics")).send().await.unwrap().text().await.unwrap();
+    assert_eq!(recycled(&m), 0, "{m}");
+    // Served, then idle past the threshold: the next newcomer recycles first.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(put("client2").await, 204);
+    let m = f.http.get(format!("{p}/metrics")).send().await.unwrap().text().await.unwrap();
+    assert_eq!(recycled(&m), 1, "{m}");
+    assert!(m.contains("recycle_idle_s=\"0\""), "{m}");
+    // The earlier agent was forgotten with the old transport; registering again restores it.
+    assert_eq!(f.get(&p, 0..MIB, 0, 32).await.status(), 428);
+    f.register(&p).await;
+    assert_eq!(f.get(&p, 0..MIB, 0, 33).await.status(), 200);
+    assert!(f.drain(33).is_complete(0..MIB));
 }

@@ -71,6 +71,7 @@ impl Proxy {
                     pool: Arc::new(Pool::new(slots, MIB as usize)),
                     write_inflight: None,
                     retire_idle: None,
+                    recycle_idle: None,
                     agents: Default::default(),
                     metrics: Metrics::default(),
                     config: ConfigInfo {
@@ -84,6 +85,7 @@ impl Proxy {
                         meta_type: "Default".into(),
                         stub: true,
                         retire_idle_s: 0,
+                        recycle_idle_s: 0,
                     },
                 });
                 let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
