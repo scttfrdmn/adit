@@ -7,6 +7,11 @@
 //! buffer with seeded random bytes, writes it in chunks (each with a notification), then sends
 //! back the S3-style composite SHA-256 of what it sent so the target can compare against the
 //! digest it computes on the GPU.
+//!
+//! `--idle-before 300,0,300` (#98, ai-dynamo/nixl#2505) keeps this one agent alive across several
+//! rounds, one per entry plus the first: before round k+1 it sleeps the k-th number of seconds,
+//! then connects to a *new* target process (a new agent) at `--target` and writes again. A
+//! round's failure is reported, not fatal. The exit status is non-zero if any round failed.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -46,6 +51,26 @@ struct Args {
     /// Part size of the composite digest (must match the target).
     #[arg(long, default_value_t = 8)]
     part_mib: u64,
+    /// Comma-separated seconds to idle before each further round, each against a new target
+    /// process (#98). Empty (default): one round.
+    #[arg(long, value_delimiter = ',')]
+    idle_before: Vec<u64>,
+    /// Seconds to keep retrying the connection to each round's target.
+    #[arg(long, default_value_t = 600)]
+    connect_wait_s: u64,
+}
+
+/// Connect to `target`, retrying until it listens or `wait` passes (each round's target is a new
+/// process started separately).
+fn connect(target: &str, wait: std::time::Duration) -> std::io::Result<TcpStream> {
+    let until = Instant::now() + wait;
+    loop {
+        match TcpStream::connect(target) {
+            Ok(c) => return Ok(c),
+            Err(e) if Instant::now() >= until => return Err(e),
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(500)),
+        }
+    }
 }
 
 #[tokio::main]
@@ -87,7 +112,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let composite = format!("{}-{}", base64::engine::general_purpose::STANDARD.encode(h.finalize()), parts.len());
     drop(all);
 
-    let mut conn = TcpStream::connect(&a.target)?;
+    let rounds = 1 + a.idle_before.len();
+    if rounds > 1 && a.op != "write" {
+        return Err("--idle-before needs --op write".into());
+    }
+    let mut any_failed = false;
+    for round in 1..=rounds {
+        if round > 1 {
+            let idle = a.idle_before[round - 2];
+            eprintln!("# round {round}: idle {idle}s");
+            tokio::time::sleep(std::time::Duration::from_secs(idle)).await;
+        }
+        let idle_s = if round > 1 { a.idle_before[round - 2] } else { 0 };
+        match one_round(&a, &writer, &held, chunk, total, &composite, &pool, round, rounds).await {
+            Ok(ok) => any_failed |= !ok,
+            Err(e) => {
+                println!("ROUND {round} idle_before_s={idle_s} ERROR {e}");
+                any_failed = true;
+            }
+        }
+        if rounds > 1 {
+            eprintln!("# round {round} done");
+        }
+    }
+    if any_failed {
+        return Err("probe failed".into());
+    }
+    Ok(())
+}
+
+/// One target: receive its destination and metadata, write (or, for `--op read`, hand over our
+/// region), print the verdict. Returns whether the round passed.
+#[allow(clippy::too_many_arguments)]
+async fn one_round(
+    a: &Args,
+    writer: &NixlWriter,
+    held: &[(usize, usize, adit_proxy::pool::Slot<'_>)],
+    chunk: usize,
+    total: usize,
+    composite: &str,
+    pool: &Pool,
+    round: usize,
+    rounds: usize,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let idle_s = if round > 1 { a.idle_before[round - 2] } else { 0 };
+    let mut conn = connect(&a.target, std::time::Duration::from_secs(a.connect_wait_s))?;
     let mut rd = BufReader::new(conn.try_clone()?);
     let mut line = String::new();
     rd.read_line(&mut line)?;
@@ -113,14 +182,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut verdict = String::new();
         rd.read_line(&mut verdict)?;
         println!("TARGET {}", verdict.trim());
-        if !verdict.contains("PASS") {
-            return Err("probe failed".into());
-        }
-        return Ok(());
+        return Ok(verdict.contains("PASS"));
     }
     let t0 = Instant::now();
     let results: Vec<_> = futures::stream::iter(held.iter().map(|(i, n, s)| {
-        let (writer, remote) = (&writer, &remote);
+        let (writer, remote) = (writer, &remote);
         async move {
             let off = (*i * chunk) as u64;
             let notif = Notif { req: 0, offset: off, len: *n as u64 }.encode();
@@ -141,12 +207,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         a.concurrency,
         total as f64 * 8.0 / secs / 1e9
     );
-    // Wait for the target's verdict before tearing down the agent.
+    // Wait for the target's verdict before tearing down the agent (or the next round). A target
+    // that aborted (#98) sends none.
     let mut verdict = String::new();
-    rd.read_line(&mut verdict)?;
-    println!("TARGET {}", verdict.trim());
-    if failed > 0 || !verdict.contains("PASS") {
-        return Err("probe failed".into());
+    let got = rd.read_line(&mut verdict).unwrap_or(0);
+    let verdict = if got == 0 { "none (target closed the connection)".to_string() } else { verdict.trim().to_string() };
+    println!("TARGET {verdict}");
+    let ok = failed == 0 && verdict.contains("PASS");
+    if rounds > 1 {
+        println!(
+            "ROUND {round} idle_before_s={idle_s} remote={remote} failed={failed} {}",
+            if ok { "PASS" } else { "FAIL" }
+        );
     }
-    Ok(())
+    Ok(ok)
 }
