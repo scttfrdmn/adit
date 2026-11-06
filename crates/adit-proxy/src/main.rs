@@ -61,6 +61,12 @@ struct Args {
     /// idled about 4 min; the earlier client's metadata is invalidated before that.
     #[arg(long, default_value_t = 60)]
     retire_idle_agents_s: u64,
+    /// Recreate the NIXL agent and backend (and register the pool again) when an agent registers
+    /// after the proxy served one and then idled this many seconds (0 = never). #98: retiring
+    /// departed agents did not prevent the failed first writes after about 4 min idle; only a
+    /// restart did. Below that threshold by default.
+    #[arg(long, default_value_t = 180)]
+    recycle_idle_s: u64,
 }
 
 #[tokio::main]
@@ -101,9 +107,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             meta_type: format!("{:?}", a.meta_type),
             stub: false,
             retire_idle_s: a.retire_idle_agents_s,
+            recycle_idle_s: a.recycle_idle_s,
         },
         write_inflight: (a.write_inflight > 0).then(|| tokio::sync::Semaphore::new(a.write_inflight)),
         retire_idle: (a.retire_idle_agents_s > 0).then(|| Duration::from_secs(a.retire_idle_agents_s)),
+        recycle_idle: (a.recycle_idle_s > 0).then(|| Duration::from_secs(a.recycle_idle_s)),
         agents: Default::default(),
     });
     let listener = tokio::net::TcpListener::bind(&a.listen).await?;

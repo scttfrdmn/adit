@@ -77,6 +77,11 @@ impl RemoteWriter for Arc<Loopback> {
         Ok(())
     }
 
+    fn recycle(&self) -> Result<(), WriteError> {
+        self.known.lock().unwrap().clear();
+        Ok(())
+    }
+
     fn write<'a>(
         &'a self,
         src: &'a [u8],

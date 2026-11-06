@@ -38,6 +38,14 @@ pub trait RemoteWriter: Send + Sync + 'static {
         Ok(())
     }
 
+    /// Recreate the transport from scratch (NIXL: a new agent and backend, the pool registered
+    /// again), forgetting every remote agent. Called only with no transfer in progress (#98: an
+    /// initiator that had served a client and then idled about 4 min failed its first writes to
+    /// the next one, and only a process restart cleared it).
+    fn recycle(&self) -> Result<(), WriteError> {
+        Ok(())
+    }
+
     /// Backend name for `/metrics` and results rows.
     fn backend(&self) -> &str;
 }

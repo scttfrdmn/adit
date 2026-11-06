@@ -40,6 +40,10 @@ pub struct App {
     /// first writes to the next client, and the client aborted in the EFA provider). `None`
     /// keeps every agent.
     pub retire_idle: Option<Duration>,
+    /// Recreate the transport ([`RemoteWriter::recycle`]) when an agent registers after the proxy
+    /// served one and then sat idle at least this long (#98: retiring departed agents' metadata did
+    /// not prevent the failed first writes; only a restart did). `None` = never.
+    pub recycle_idle: Option<Duration>,
     /// Registered agents' last activity and transfers in progress.
     pub agents: Agents,
 }
@@ -70,6 +74,28 @@ impl Drop for Active<'_> {
 }
 
 impl App {
+    /// Before loading a newcomer: if the proxy has served an agent and nothing has happened for
+    /// [`App::recycle_idle`], recreate the transport and forget every agent. Returns whether it did.
+    fn recycle_if_idle(&self) -> bool {
+        let Some(after) = self.recycle_idle else { return false };
+        let mut m = self.agents.0.lock().unwrap();
+        let Some(last) = m.values().map(|u| u.last).max() else { return false };
+        if m.values().any(|u| u.active > 0) || last.elapsed() < after {
+            return false;
+        }
+        match self.writer.recycle() {
+            Ok(()) => {
+                m.clear();
+                self.metrics.transport_recycled.fetch_add(1, Relaxed);
+                true
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "could not recycle the transport");
+                false
+            }
+        }
+    }
+
     /// Record `agent` as registered now, first retiring every other agent idle for at least
     /// [`App::retire_idle`]. Returns the agents retired.
     fn registered(&self, agent: &str) -> Vec<String> {
@@ -132,6 +158,9 @@ async fn metrics(State(app): State<Arc<App>>) -> String {
 }
 
 async fn register(State(app): State<Arc<App>>, Path(name): Path<String>, body: Bytes) -> Response<Body> {
+    if app.recycle_if_idle() {
+        tracing::info!(agent = name, "recreated the transport after idle before loading");
+    }
     match app.writer.load_agent(&body) {
         Ok(loaded) if loaded == name => {
             let retired = app.registered(&name);
