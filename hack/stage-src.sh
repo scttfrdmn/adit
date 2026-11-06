@@ -9,7 +9,9 @@
 # the AMIs predate the pin (v1.2.0), so every refresh rebuilds NIXL. On the box, hack/install.sh
 # with ADIT_SRC_S3=<prefix> builds both from these (meson --wrap-mode=nodownload, cargo --frozen);
 # the rest of the toolchain comes from the AMI's markers (install.sh refuses offline if one is
-# missing). Needs meson on the operator machine (MESON, default meson on PATH).
+# missing). It also builds aditctl at that commit for linux/amd64 and arm64 into
+# s3://$BUCKET/adit/bin/, where the on-box steps fetch it. Needs meson (MESON, default meson on
+# PATH) and Go on the operator machine.
 #
 #   AWS_PROFILE=aws BUCKET=scttfrdmn-lith-bench REGION=us-east-1 bash hack/stage-src.sh [ref=main]
 #
@@ -90,6 +92,17 @@ else
     aws s3 cp --only-show-errors "$W/nixl.tar.gz" "$NDEST/nixl.tar.gz" || fail "upload nixl"
     log "nixl $nixl_ref staged: $(du -h "$W/nixl.tar.gz" | cut -f1) -> $NDEST"
 fi
+
+# aditctl for the boxes (presign, region check, gen), built from the same tree and put where the
+# on-box steps fetch it, s3://$BUCKET/adit/bin/: the bench bucket's 7-day expiry removed the old
+# copies and a session's plans step then failed (#98 validation run). Re-staged on every call, so
+# a session's own staging renews them.
+mkdir -p "$W/actl" && git archive "$sha" cmd internal go.mod go.sum | tar x -C "$W/actl" || fail "aditctl tree"
+for arch in amd64 arm64; do
+    (cd "$W/actl" && GOOS=linux GOARCH=$arch CGO_ENABLED=0 go build -o "$W/aditctl-linux-$arch" ./cmd/aditctl) || fail "aditctl $arch"
+    aws s3 cp --only-show-errors "$W/aditctl-linux-$arch" "s3://$BUCKET/adit/bin/aditctl-linux-$arch" || fail "upload aditctl $arch"
+done
+log "aditctl ${sha:0:7} staged at s3://$BUCKET/adit/bin/"
 
 if staged "$DEST/adit.tar.gz" "$DEST/vendor.tar.gz" "$DEST/cargo-config.toml"; then
     log "$sha already staged"
