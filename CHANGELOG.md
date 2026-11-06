@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Documentation audit.** The README now covers the protocol's registration step, every crate and binary, the stub guard and real-NIXL builds, test targets, a G2 session, the offline build path and where results live; it no longer claims zero copies as a fact or that lith shares `adit-fetch`. `bench/paths/README.md` gives the contract's defaults and lists the diagnostic scripts. Path C and D READMEs drop a local path and G3 scheduling, and point sizing and cost to #38. Script headers in `hack/` and `bench/paths/` now match their bodies (defaults, knobs, outputs, the missing `sizing` and `watchdog` phases of `D/run.sh`, and `hack/probe.sh`'s reference to a nonexistent `hack/g0.sh`).
 - **`hack/g2.sh` no longer logs a false "results not synced"** for proxy-side steps (an `&&`/`||` chain in `box_run`), and its idle98 and r98 core counts count core files only. Both were wrong in the #98 idle-test session.
 - **`hack/g2.sh` streams the client's results to the bucket after every step,** in one sync, and `collect` fetches them from there. In the #60 follow-up, the client's cost-limit terminated it while `collect` was still copying files one at a time over spawn connect, and the r98 and pairsplit rows were lost.
 - **`bench/paths/interleave.sh` `CORES=1` raises the hard core limit with `prlimit`** before `ulimit -c`. bgrun's hard limit is 0, so the first r98 run could keep no core. It now logs the limits it got.

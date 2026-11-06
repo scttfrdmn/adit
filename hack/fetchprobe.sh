@@ -2,11 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Fetch-only probe (#53), run from the operator machine against one proxy box placed by
-# `aditctl fleet up --clients 0 --proxies 1`: rebuild adit at ADIT_REF, presign T2-256 on the box,
-# run bench/paths/fetchprobe.sh there (ARMS, CYCLES), then pull the results and push the per-arm
-# snapshots to the bench bucket. No GPU client is involved.
+# `aditctl fleet up --clients 0 --proxies 1`: rebuild adit at ADIT_REF (default: the current
+# branch), presign T2 on the box and keep its first 256 objects (T2-256), run
+# bench/paths/fetchprobe.sh there (ARMS, CYCLES, NET_IFACES, PROFILE_ARMS pass through), then pull
+# the results and push the per-arm snapshots to the bench bucket. No GPU client is involved.
 #
 #   AWS_PROFILE=aws BUCKET=... REGION=... ADIT_REF=main bash hack/fetchprobe.sh <fleet> [out-dir]
+#
+# out-dir defaults to bench/runs/fp-<utc>; it is pushed to s3://$BUCKET/adit/fetchprobe/. OFFLINE=1
+# (a box with no internet route) builds from source staged by hack/stage-src.sh, as hack/g2.sh does.
 set +e
 set -uo pipefail
 echo "opts=$-"

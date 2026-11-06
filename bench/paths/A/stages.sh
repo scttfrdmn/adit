@@ -7,6 +7,10 @@
 # s5cmd's own rusage.
 #
 #   MANIFEST=... CONCS="16 64" RUNS=3 bash bench/paths/A/stages.sh T1
+#
+# CONCS: s5cmd cp --concurrency levels (default "16 64"); S5_WORKERS, NVME_DIR and BUF_GIB as in
+# A/run.sh. With COLD=1 the page cache is dropped before each stage. Per-stage lines go to
+# <OUT without .csv>.stages, the load rows to OUT.
 P=A
 source "$(dirname "$0")/../lib/common.sh"
 MANIFEST=${MANIFEST:?manifest JSONL}
