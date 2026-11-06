@@ -4,7 +4,7 @@
 # Path C: FUSE mount + cuFile compatibility mode. The workload's bucket is mounted read-only in its
 # native key layout by lith and by Mountpoint for Amazon S3; gpuload.py reads every manifest object
 # through KvikIO CuFile with KVIKIO_COMPAT_MODE=ON (POSIX pread into a host bounce buffer, then a
-# copy to the GPU) and checks it on the GPU against the manifest. Scaffold: not run until G3.
+# copy to the GPU) and checks it on the GPU against the manifest. Scaffold: not yet run.
 #
 # Path knobs (tune before measuring, law 3; see C/README.md for where each best value comes from):
 #   MOUNTS          file systems to run (default "lith mountpoint")

@@ -5,12 +5,15 @@
 # For each (chunk, slots) rung: restart adit-proxy with that pool, then read T1 into the GPU with
 # adit-get (oracle on every run). Proxy CPU-seconds come from its /metrics before and after.
 #
-#   ADIT_SPAWN=spawn bash hack/g0c.sh <client-box> <proxy-box> <proxy-private-ip> <runs> <chunks> <slots>
+#   ADIT_SPAWN=spawn bash hack/g0c.sh <client-box> <proxy-box> <proxy-private-ip> [runs=2] [chunks="4 8 16"] [slots="16 32 64 128 256"]
 #   e.g. bash hack/g0c.sh adit-g0-client-0 adit-g0-proxy-0 172.31.39.31 2 "4 8 16" "1024 512 256"
 #
 # Slots run in the order given; give them descending so the cheapest (fastest) rung runs first
 # (law 7). With CLIENT_IP set, hack/health.sh gates the pair before the ladder and every 5 rungs.
-# PROXY_ARGS and GET_ARGS pass extra flags through (e.g. --meta-type get-object, --pump-idle-us).
+# PROXY_ARGS passes extra adit-proxy flags (e.g. --meta-type get-object), GET_ARGS extra adit-get
+# flags (e.g. --pump-idle-us). Rows go to bench/runs/g0c-<utc>/g0c-raw.csv, proxy CPU to
+# proxy-cpu.csv. The rows' client_instance and proxy_instance are fixed at g7e.12xlarge and
+# c8gn.16xlarge (the G0 pair).
 set +e
 set -uo pipefail
 echo "opts=$-"

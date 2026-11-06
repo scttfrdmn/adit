@@ -6,6 +6,8 @@
 # row in OUT with its configuration. The best row's configuration is then used for H-ceiling.
 #
 #   PLAN=... DEVICES=0,...,7 THREADS="128 512 1024" TASK_MIB="16 64" CONC="8 32" bash bench/paths/B/sweep.sh T2-64
+#
+# The example values are the defaults. DEVICES defaults to 0, BUF_GIB (per GPU) to 64.
 P=B
 source "$(dirname "$0")/../lib/common.sh"
 PLAN=${PLAN:?plan JSONL with presigned urls}

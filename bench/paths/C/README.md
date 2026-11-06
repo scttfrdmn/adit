@@ -1,7 +1,7 @@
 # Path C: FUSE mount + cuFile compatibility mode
 
-**Scaffold: not run until G3.** Nothing here has produced a number yet; flags marked UNVERIFIED
-have not been checked against the installed binary on the client AMI.
+**Scaffold: not yet run.** Nothing here has produced a number; flags marked UNVERIFIED have not
+been checked against the installed binary on the client AMI.
 
 ## What C measures
 
@@ -23,7 +23,7 @@ Two file systems:
 
 | fs | what it is |
 |---|---|
-| `lith` | read-only S3 FUSE file system with a prebuilt local index (`/Users/scttfrdmn/src/lith`, v1.18.1 at the time of writing) |
+| `lith` | read-only S3 FUSE file system with a prebuilt local index ([scttfrdmn/lith](https://github.com/scttfrdmn/lith); `INSTALL=1` installs `LITH_VERSION`, default v1.18.1) |
 | `mountpoint` | Mountpoint for Amazon S3 (`mount-s3`) |
 
 ## Usage
@@ -32,7 +32,9 @@ Two file systems:
 MANIFEST=... BUCKET=... REGION=us-east-1 bash bench/paths/C/run.sh <workload>
 ```
 
-The common contract is in `../README.md`. Path knobs are listed at the top of `run.sh`.
+The common contract is in `../README.md`. Path knobs are listed at the top of `run.sh`. Both file
+systems' binaries must be installed (`INSTALL=1` installs any that are missing), and so must
+`fusermount3` or `fusermount` (`apt-get install fuse3`).
 
 ## Layout: key K is the file `$MNT/<fs>/K`
 
@@ -87,8 +89,8 @@ The flags behave as follows:
 
 | knob | value used | source |
 |---|---|---|
-| lith flags | lith defaults (`LITH_FLAGS` empty), lith pinned by `LITH_VERSION` (default v1.18.1), and `lith version` recorded in the results header | The project prompt's "lith defaults from its v0.2 matrix" predates lith 1.x (now 1.18.x). The current defaults (`--mem-cache` 25% RAM, `--disk-cache 0`, `--s3-concurrency 128`, `--inflight-bytes` 2 × NIC × 100 ms, readahead sized to the detected NIC; `--nic-gbps` overrides detection) are lith's own tuned configuration, so they are path C at its best (law 3). |
-| `mount-s3 --maximum-throughput-gbps` | `NIC_GBPS`: the instance type's `NetworkInfo.NetworkCards[0].BaselineBandwidthInGbps` (UNVERIFIED field name), floored to an integer (UNVERIFIED that the flag rejects fractions) | Project prompt: "set to the NIC". Card 0 carries the primary ENA, the interface S3 traffic uses on multi-card EFA instances. |
+| lith flags | lith defaults (`LITH_FLAGS` empty), lith pinned by `LITH_VERSION` (default v1.18.1), and `lith version` recorded in the results header | The project document's "lith defaults from its v0.2 matrix" predates lith 1.x. The current defaults (`--mem-cache` 25% RAM, `--disk-cache 0`, `--s3-concurrency 128`, `--inflight-bytes` 2 × NIC × 100 ms, readahead sized to the detected NIC; `--nic-gbps` overrides detection) are lith's own tuned configuration, so they are path C at its best (law 3). |
+| `mount-s3 --maximum-throughput-gbps` | `NIC_GBPS`: the instance type's `NetworkInfo.NetworkCards[0].BaselineBandwidthInGbps` (UNVERIFIED field name), floored to an integer (UNVERIFIED that the flag rejects fractions) | Project document: "set to the NIC". Card 0 carries the primary ENA, the interface S3 traffic uses on multi-card EFA instances. |
 | `mount-s3 --max-threads`, `--read-part-size` | Mountpoint defaults (16 concurrent FUSE ops; 8 MiB part), overridable via `MP_FLAGS` | Mountpoint `CONFIGURATION.md`. lith's matrix ran mount-s3 at `--read-part-size 8388608`. With `CONCURRENCY` above 16, `--max-threads` probably binds and should be raised before measuring. |
 | `KVIKIO_THREADS`, `TASK_MIB`, `CONCURRENCY` | swept: `16 64 128` × `4 16` × `8` | Same sweep as path B. Pick the best cell per file system and record it. |
 

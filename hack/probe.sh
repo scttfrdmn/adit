@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # G0b single-box facts for the capability matrix, as key=value lines on stdout (also written to
-# /var/lib/adit/probe-<instance>.txt). The two-box measurements (nixlbench LIBFABRIC VRAM, the
-# adit NIXL probe) are run from the operator with hack/g0.sh because they need a peer.
+# /var/lib/adit/probe-<instance-type>.txt, with fi_info and gdscheck output beside it). nixlbench
+# LIBFABRIC DRAM -> VRAM on one GPU box is hack/g0b-box.sh; the cross-box adit NIXL probe needs a
+# peer and runs from the operator with hack/wseries.sh.
 #
-#   bash hack/probe.sh
+#   bash hack/probe.sh        # or: aditctl probe, make probe
 set +e
 set -uo pipefail
 echo "opts=$-"

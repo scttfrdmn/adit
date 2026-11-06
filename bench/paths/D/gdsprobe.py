@@ -4,7 +4,7 @@
 Run with KVIKIO_COMPAT_MODE=OFF (run.sh does). Prints compat mode as KvikIO resolved it, whether
 cuFile reports GDS available, and whether a CuFile handle on a file under the mount opened in
 GDS mode. KvikIO's Python API has moved between releases, so every probe is tolerant and reports
-"unknown" rather than guessing (UNVERIFIED against the installed KvikIO until G3).
+"unknown" rather than guessing (UNVERIFIED against the installed KvikIO until the first run).
 
     KVIKIO_COMPAT_MODE=OFF python bench/paths/D/gdsprobe.py /fsx
 """

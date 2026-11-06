@@ -10,6 +10,9 @@
 #   S5_WORKERS   s5cmd --numworkers (default 256)
 #   S5_CONC      s5cmd cp --concurrency, parts per object (default 16)
 #   CHUNK_MIB    pinned staging chunk (default 8)
+#   BUF_GIB      GPU buffer (default: the largest object, rounded up to a GiB)
+#
+# A/stages.sh times the download and the load apart.
 P=A
 source "$(dirname "$0")/../lib/common.sh"
 MANIFEST=${MANIFEST:?manifest JSONL}

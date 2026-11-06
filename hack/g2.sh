@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # G2 (#48), run from the operator machine against a fleet placed by `aditctl fleet up`: one
-# multi-GPU client (p5en.48xlarge) and N proxies (c8gn.48xlarge). Steps, in order (STEPS to pick):
+# multi-GPU client (p5en.48xlarge) and N proxies (c8gn.48xlarge). Run it from the repository root.
+# Steps run in the order STEPS lists them; default
+# STEPS="refresh health start plans ladder sweep t1 ceiling collect". The steps:
 #
 #   refresh   check out ADIT_REF and rebuild adit on every box (hack/install.sh, in parallel)
 #   health    hack/health.sh per proxy against the client, ALL_RAILS=1: STOPS adit-proxy and probes the
@@ -37,11 +39,19 @@
 #
 #   ADIT_SPAWN=... STEPS="refresh health start plans ladder" bash hack/g2.sh <fleet> [proxies=8]
 #
+# The proxies are the fleet's (`aditctl fleet status`), in index order; if there are fewer than
+# [proxies], N is what is there. Main knobs: ADIT_SPAWN (default spawn), BUCKET
+# (scttfrdmn-lith-bench), REGION (us-east-1), ADIT_REF (default: the current branch; it must be
+# pushed), PROXY_ARGS (default "--chunk-mib 8 --slots 2048 --throughput-gbps 600"), E_ARGS (default
+# "--nixl-progress-delay-us 100 --agent-per-gpu --pin-gpu-proxy"), ARMS, CYCLES, BUF_GIB (64),
+# E_CONCURRENCY (128), MIN_GBPS (health, 180), STEP_TIMEOUT (3600 s), OUT. Per-step knobs are in
+# each step_ function below.
+#
 # OFFLINE=1 for boxes with no internet route (launched --no-public-ip): refresh builds from source
 # staged in the bucket (hack/stage-src.sh) instead of GitHub.
 #
-# Results land in $OUT locally and under s3://$BUCKET/adit/g2/ after every step (logs streamed off
-# the instances, law 7).
+# Results land in $OUT (default bench/runs/g2-<utc>) locally and under
+# s3://$BUCKET/adit/g2/<basename of OUT>/ after every step (logs streamed off the instances, law 7).
 set +e
 set -uo pipefail
 echo "opts=$-"

@@ -9,6 +9,9 @@
 # s3://$BUCKET/adit/src/wheels-py<XY>-cu<N>/, where install.sh looks for it offline.
 #
 #   BUCKET=scttfrdmn-lith-bench REGION=us-east-1 bash hack/stage-wheels.sh
+#
+# The box must have nvcc (the client AMI does): the CUDA major version picks the package names.
+# W sets the local wheelhouse directory (default /tmp/adit-wheels).
 set +e
 set -uo pipefail
 echo "opts=$-"

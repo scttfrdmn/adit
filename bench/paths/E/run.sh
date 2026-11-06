@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# Path E: adit. The proxies must already be serving (hack/g0c.sh starts one per rung; G2's stripe
-# ladder starts N). This runner reads the plan into the GPU through them and checks every object.
+# Path E: adit. The proxies must already be serving (hack/g0c.sh starts one per rung; hack/g2.sh's
+# start step starts N). This runner reads the plan into one GPU through them with adit-get, checks
+# every object, and exits non-zero on a partial transfer or an oracle mismatch. Multi-GPU and
+# multi-arm runs go through bench/paths/interleave.sh.
 #
 # Path knobs:
 #   PROXIES        comma-separated proxy base URLs (required)

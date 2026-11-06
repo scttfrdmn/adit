@@ -6,19 +6,21 @@
 # over EFA (LNet efa), and bench/paths/lib/gpuload.py reads every object with KvikIO CuFile, compat
 # mode OFF, into GPU buffers and checks each on the GPU.
 #
-# SCAFFOLD: not run until G3. Nothing here has touched AWS. See D/README.md for the UNVERIFIED list.
+# SCAFFOLD: not yet run. Nothing here has touched AWS. See D/README.md for the UNVERIFIED list.
 #
 #   operator side (laptop, AWS_PROFILE=aws; creates and deletes billable resources):
 #     run.sh plan     <workload>   size + cost estimate, no AWS writes
+#     run.sh sizing   <workload>   FS size and cost per target Gb/s (SIZING_GBPS), no AWS calls (#38)
 #     run.sh create   <workload>   CONFIRM=1: create the FS (tag adit:fleet), wait AVAILABLE, start the deadline watchdog
 #     run.sh dra      <workload>   CONFIRM=1: create the DRA, time the metadata import (recorded separately)
 #     run.sh redra    <workload>   CONFIRM=1: delete the DRA with its data, recreate it (a fresh DRA = a new cold)
-#     run.sh status   <workload>   every FSx file system tagged adit:fleet, any region-1 state
+#     run.sh status   <workload>   every FSx file system in REGION tagged adit:fleet, in any lifecycle state
 #     run.sh delete   <workload>   CONFIRM=1: delete the FS, wait until it is gone, print FS-hours
+#     run.sh watchdog <workload>   started by create (nohup): deletes the FS at the deadline
 #   client side (GPU box, repository root; FSX_DNS/FSX_MOUNT_NAME from the operator's state file):
 #     run.sh setup    <workload>   Lustre client + EFA/GDS client configuration (--optimized-for-gds)
 #     run.sh mount    <workload>   mount over EFA, prove LNet uses efa
-#     run.sh gdscheck <workload>   gdscheck -p, nvidia-fs, KvikIO compat/GDS state -> D-gds.txt
+#     run.sh gdscheck <workload>   gdscheck -p, nvidia-fs, KvikIO compat/GDS state -> bench/runs/D-<workload>-gds.txt
 #     run.sh read     <workload>   one cold pass (fresh DRA, unhydrated) + RUNS warm passes
 #     run.sh tune     <workload>   warm-only sweep of KvikIO threads x task size x concurrency (law 3)
 #     run.sh umount   <workload>

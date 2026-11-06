@@ -1,8 +1,8 @@
 # Path D: FSx for Lustre DRA + GDS
 
-**Scaffold: not run until G3.** Nothing in this directory has touched AWS. Every item marked
-UNVERIFIED below must be checked against the AWS and NVIDIA docs (or a cheap probe) before the first
-create.
+**Scaffold: not yet run.** Nothing in this directory has touched AWS. Every item marked UNVERIFIED
+below must be checked against the AWS and NVIDIA docs (or a cheap probe) before the first create.
+Sizing and cost are discussed in #38.
 
 Definition (project document): Persistent 2, 1000 MB/s/TiB, EFA enabled, a data repository
 association (DRA) to the bucket, lazy load, read via cuFile with GDS; the file system sized to the
@@ -29,6 +29,7 @@ all-traffic security group. EFA needs that group, and FSx EFA needs it too.
 ```
 # operator
 MANIFEST=m.jsonl bash bench/paths/D/run.sh plan R1                         # size + cost, no AWS writes
+bash bench/paths/D/run.sh sizing R1                                        # FS size and cost per target Gb/s, no AWS calls
 CONFIRM=1 MANIFEST=m.jsonl SUBNET_ID=subnet-… SG_ID=sg-… bash bench/paths/D/run.sh create R1
 CONFIRM=1 MANIFEST=m.jsonl bash bench/paths/D/run.sh dra R1                # times the metadata import
 #   copy bench/runs/D-R1.fsx.env to the client's bench/runs/
@@ -74,8 +75,8 @@ The project requires AWS resources to go through spawn where it can. `spawn laun
 
 So `create`, `dra`, `redra` and `delete` use raw `aws fsx`, each guarded by `CONFIRM=1`. The
 instances still go through spawn. Making spawn do this would take an EFA flag, a metadata mode, extra
-tags, a configurable DRA and an EFA mount. That is a spawn change for Scott to decide. **Needs
-decision:** accept raw `aws fsx` for path D, or wait for spawn support.
+tags, a configurable DRA and an EFA mount. Whether path D uses raw `aws fsx` or waits for spawn
+support is Scott's decision.
 
 ## Cost model
 
@@ -102,9 +103,8 @@ the run. Per-run cost = FS $/hr × the run's share of the window, plus the clien
 computes it from the header comments.
 
 Discrepancy: spawn's rate table (`cmd/fsx_cost.go`) lists 1000 MB/s/TiB at **$1.160**/GiB-month, a
-linear doubling of the 125 tier. The rate given for this project is $0.600. Confirm it from the Price
-List API before G3 (CLAUDE.md: cost every run from the Price List). If spawn's table is wrong, file it
-against spawn.
+linear doubling of the 125 tier. The Price List API gives $0.600 in us-east-1
+(`USE1-Storage.SSD.1000`, #38), which is the `USD_GB_MONTH` default.
 
 ## Throughput ceiling (law 5 mechanism, before any run)
 
@@ -113,8 +113,9 @@ A PERSISTENT_2 file system delivers `capacity TiB × 1000 MB/s`. At the 4.8 TiB 
 across g7/g7e/p5). "Sized to the working set" therefore caps path D at the FS baseline whenever the
 working set is small. Any cell where D is behind on a small working set is an FS-throughput tie
 caused by sizing. Law 3 (best known configuration) may require a larger file system than the working
-set needs. If so, record `fs_gib` in `config` and cost it. **Needs decision:** whether to size D by
-the working set (the definition) or by throughput (fairness), or to run both.
+set needs. If so, record `fs_gib` in `config` and cost it. Whether to size D by the working set (the
+definition), by throughput (fairness), or both is discussed in #38; `run.sh sizing` prints the size
+and cost per target rate.
 
 ## GDS verification (never a silent fallback)
 
@@ -163,11 +164,11 @@ There are also two checks on every pass, done by `annotate.py`:
   only.
 - The client box needs a Lustre client for its exact kernel. The DLAMI used in G0 runs kernel
   `7.0.0-1014-aws`, so check that the FSx Ubuntu repository has `lustre-client-modules-$(uname -r)`
-  before booking G3 time.
+  before booking time on the box.
 - The g7e.12xlarge has one EFA device, shared by the Lustre LNet efa network and anything else that
   uses EFA. Path D runs alone on the box.
 
-## UNVERIFIED (check before G3)
+## UNVERIFIED (check before the first create)
 
 1. The `aws fsx create-file-system` shape: `EfaEnabled=true` and
    `MetadataConfiguration={Mode=AUTOMATIC}` inside `--lustre-configuration`, whether EFA requires the
@@ -175,7 +176,7 @@ There are also two checks on every pass, done by `annotate.py`:
    alongside GDS.
 2. The capacity rules for EFA-enabled 1000 MB/s/TiB file systems: the 4800 GiB minimum is given, but
    the 2400 GiB increment used by `FS_GIB` auto-sizing is assumed.
-3. The $0.600/GB-month rate. It conflicts with spawn's $1.160. Does EFA enablement add any charge?
+3. Whether EFA enablement adds any charge to the $0.600/GB-month storage rate.
 4. Which instance types FSx supports for GDS (is g7e on the list?), and GDS-over-EFA support on the
    Lustre client.
 5. The EFA client setup archive URL

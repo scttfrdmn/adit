@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # G2 placement attempt (#48): try to land the GPU client plus proxy-0 of fleet `g2`, stopping at
-# the first that lands; prints PLACED <region> <type> or NONE. Attempts that fail cost nothing.
+# the first that lands; prints PLACED <region> <type> bucket=<bucket> proxy_efa=<n> or NONE. Attempts
+# that fail cost nothing. A client that lands without proxy-0 is retired at once.
 # Proxies are on-demand (G2: spot proxies were reclaimed within minutes).
 # Order: p5en then p5 in us-east-1 and us-east-2, then p5en in the other regions Scott approved
 # (2026-10-20), cheapest first; spot before on-demand within each. Every region has a bench bucket
@@ -13,6 +14,13 @@
 # hold at most 6 c8gn.48xlarge, so the ladder there tops out at 6 proxies.
 #
 #   AWS_PROFILE=aws [REGIONS=us-east-1] [NO_PUBLIC_IP=1] bash hack/g2-place.sh
+#
+# Filters and limits: REGIONS and CLIENT_TYPES (space-separated) limit the tries; NO_PUBLIC_IP=1
+# launches every box private-only (no Elastic IPs; see hack/stage-src.sh for building such boxes);
+# FLEET_EIPS (default 9) is the Elastic IPs a fleet with two-rail proxies needs, and with fewer free
+# every proxy gets one rail, unless REQUIRE_ALL_RAILS=1 skips the region; PROXY_FIRST_AZS lists AZs
+# where proxy-0 is placed before the client. Each box gets --ttl 2h and a cost limit of 2 h at the
+# on-demand rate plus headroom. The log goes to bench/runs/g2-place-<utc>.log.
 set +e
 set -uo pipefail
 echo "opts=$-"

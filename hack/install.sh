@@ -4,18 +4,24 @@
 # Bootstrap an adit box: EFA, NIXL (pinned, LIBFABRIC plugin), nixlbench and its etcd client,
 # Rust, and the adit workspace built against the real NIXL (never the stub).
 #
-#   sudo bash hack/install.sh proxy    # GPU-less EFA proxy (Ubuntu 24.04 arm64)
-#   sudo bash hack/install.sh client   # GPU client (DLAMI base: driver, CUDA, EFA preinstalled)
+#   sudo bash hack/install.sh proxy    # GPU-less EFA proxy (Ubuntu 24.04 arm64): builds adit-proxy
+#   sudo bash hack/install.sh client   # GPU client (DLAMI base: driver, CUDA, EFA preinstalled):
+#                                      # builds adit-client and adit-proxy, path A/B tools, adit-py
+#
+# Knobs: ADIT_REF (default main), ADIT_REPO, ADIT_USER (ubuntu), NIXL_REF (the pinned commit below;
+# keep it equal to nixl-sys's rev in Cargo.toml), NIXL_PREFIX (/opt/nvidia/nvda_nixl). The checkout
+# is /opt/adit-src/adit; the binaries are linked into /usr/local/bin. Every build sets
+# NIXL_NO_STUBS_FALLBACK=1. The log is /var/lib/adit/install.log.
 #
 # Idempotent: each stage leaves a marker in /var/lib/adit and is skipped next time, so the same
 # script bakes an AMI and refreshes a box booted from one. Versions are pinned here and echoed to
 # /var/lib/adit/versions for the capability matrix.
 #
-# Offline (boxes with no internet route, `--no-public-ip`): ADIT_SRC_S3=s3://<bucket>/adit/src/<sha>,
-# staged by hack/stage-src.sh, builds adit from that source and its vendored crates (cargo
-# --frozen), and NIXL, if its marker is missing, from s3://<bucket>/adit/src/nixl-<NIXL_REF>/ (meson
-# --wrap-mode=nodownload); every other stage must already be marked done in the AMI, or the script
-# refuses. The one exception is the client's path tools (pip): offline they come from a wheelhouse
+# Offline (boxes with no internet route, `--no-public-ip`): ADIT_SRC_S3=s3://<bucket>/adit/src/<sha>
+# (in ADIT_SRC_REGION, default us-east-1), staged by hack/stage-src.sh, builds adit from that source
+# and its vendored crates (cargo --frozen), and NIXL, if its marker is missing, from
+# s3://<bucket>/adit/src/nixl-<NIXL_REF>/ (meson --wrap-mode=nodownload); every other stage must
+# already be marked done in the AMI, or the script refuses. The one exception is the client's path tools (pip): offline they come from a wheelhouse
 # staged by hack/stage-wheels.sh (ADIT_WHEELS_S3, default s3://<bucket>/adit/src/wheels-py<XY>-cu<N>);
 # without one, an offline client gets adit's binaries only (no path A/B tools, no adit-py), recorded
 # as pathtools=absent.

@@ -2,14 +2,18 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Path B: streaming loaders, no disk. KvikIO RemoteFile reads presigned HTTPS URLs straight into
-# CuPy device buffers (runs repeat within one process; there is no page cache on this path); the S3 Connector for PyTorch reads to host then copies to the GPU. Every
-# object is checked on the GPU by the same oracle as path E.
+# CuPy device buffers (runs repeat within one process; there is no page cache on this path). The S3
+# Connector for PyTorch reads to host memory, then copies to the GPU. Every object is checked on the
+# GPU by the same oracle as path E.
 #
 # Path knobs (swept before measuring, law 3):
 #   LOADERS        which loaders (default "remotefile s3connector")
 #   KVIKIO_THREADS thread pools to sweep (default "16 64 128")
 #   TASK_MIB       KvikIO task sizes to sweep (default "4 16")
 #   CONCURRENCY    objects in flight (default 8)
+#   PY             Python with the path tools and adit-py (default /opt/adit-venv/bin/python)
+#
+# For the multi-GPU tuning grid, see B/sweep.sh.
 P=B
 source "$(dirname "$0")/../lib/common.sh"
 PLAN=${PLAN:?plan JSONL with presigned urls}

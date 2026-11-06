@@ -9,7 +9,7 @@
 #   PLAN=... PROXY1=http://a:8480 PROXY2=http://b:8480 CYCLES=6 bash bench/paths/interleave.sh T1
 #
 # Arms (ARMS to override; default B512 B1024 E1 E2):
-#   B<threads>  KvikIO RemoteFile, <threads> threads, 64 MiB tasks, objects round-robin over DEVICES
+#   B<threads>  KvikIO RemoteFile, <threads> threads, B_TASK_MIB tasks, objects round-robin over DEVICES
 #   E<n>        adit through the first n of PROXIES (PROXY1,PROXY2 when PROXIES is unset); with
 #               STRIPE=1 (default) and n > 1 each object is striped across the n proxies
 #   G<g>P<ids>[-b<GiB>][-d<us>]
@@ -22,12 +22,18 @@
 # Each arm = one read of the workload, one results row, the same oracle and counter window as the
 # per-path runners.
 #
-# Knobs: CYCLE_BASE (added to the cycle number in snapshot names, for callers that run one cycle
-# per call; #71), DEVICES (GPUs, default 0), DEVICES_PER_ARM (1: arm E<k> uses the first k GPUs), BUF_GIB (per GPU, default 65), CHUNK_MIB (E, default 8), B_CONCURRENCY (objects in flight
-# for B, default 1), E_CONCURRENCY (default 1), STRIPE, E_ARGS (extra adit-get flags, e.g.
+# Knobs: CYCLES (default 6), CYCLE_BASE (added to the cycle number in snapshot names, for callers
+# that run one cycle per call; #71), DEVICES (GPUs, default 0), DEVICES_PER_ARM (1: arm E<k> uses
+# the first k GPUs), BUF_GIB (per GPU, default 65), CHUNK_MIB (E and G, default 8), B_TASK_MIB (B
+# task size, default 64), B_CONCURRENCY (objects in flight for B, default 1), E_CONCURRENCY (E and
+# G, default 1), STRIPE, E_ARGS (extra adit-get flags for E arms, e.g.
 # "--spread --chunk-mib 16 --nixl-progress-delay-us 100"), E_CONC_PER_PROXY (E arms: concurrency k x
 # this for E<k>, so per-proxy load is the same on every rung; #60 held the total fixed instead),
-# CORES (1: keep adit-get core dumps, ulimit -c, for #98; the core_pattern is the caller's).
+# CORES (1: keep adit-get core dumps, ulimit -c, for #98; the core_pattern is the caller's),
+# OCC_EVERY (slot-occupancy sampling interval for E and G arms, default 0.5 s).
+#
+# Outputs beside OUT: <OUT without .csv>.order (arm order, timestamps, key columns) and
+# <OUT without .csv>-snap/ (per-arm /metrics and EFA snapshots, adit-get stderr, slot occupancy).
 P=X
 source "$(dirname "$0")/lib/common.sh"
 PLAN=${PLAN:?plan JSONL with presigned urls}
