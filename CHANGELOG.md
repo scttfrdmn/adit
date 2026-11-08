@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`hack/g2.sh`'s `plans` step skips a workload whose manifest has expired from the bench bucket and logs it,** instead of exiting 1 (#115). **`idle98` takes `IDLE98_UPTO`** (stop after that many arms; a recycle-off control needs only serve0 and A1) **and `IDLE98_TAG`** (suffixes its output files, so two idle98 runs in one session keep separate outputs) (#117).
 - **`hack/g2.sh` counts core files only** in its r98 and idle98 summaries. The previous count also matched the core-limit lines, and logged "3 cores" in a session with none.
 - **`hack/repro98.sh` starts and stops its probes reliably.** Each `pkill` now runs in its own `spawn connect` call (a command line that also starts the target matched its own shell, even with a bracketed pattern), and the poll uses `pgrep -f '[a]dit-nixl-probe-init'` (`pgrep -x` never matched, since process names are truncated to 15 characters). The first two attempts in the PR #112 validation session ran no rounds because of these.
 - **`hack/stage-src.sh` also builds `aditctl` at the staged commit and uploads it to `s3://<bucket>/adit/bin/`,** where the on-box steps fetch it. The bench bucket's 7-day expiry had removed the old copies, and a session's plans step failed.

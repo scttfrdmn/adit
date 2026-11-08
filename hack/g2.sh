@@ -201,9 +201,9 @@ step_start() {
 
 step_plans() {
     on "$CLIENT" "command -v aditctl >/dev/null || (aws s3 cp --only-show-errors s3://$BUCKET/adit/bin/aditctl-linux-amd64 /tmp/aditctl && sudo install /tmp/aditctl /usr/local/bin/aditctl)
-        for w in t1 t2; do aws s3 cp --only-show-errors s3://$BUCKET/adit/manifests/\$w.jsonl /tmp/\$w.jsonl && aditctl presign --region $REGION --manifest /tmp/\$w.jsonl --out /tmp/\$w-plan.jsonl --ttl 8h; done
+        for w in t1 t2; do if aws s3 cp --only-show-errors s3://$BUCKET/adit/manifests/\$w.jsonl /tmp/\$w.jsonl 2>/dev/null; then aditctl presign --region $REGION --manifest /tmp/\$w.jsonl --out /tmp/\$w-plan.jsonl --ttl 8h; else echo \"plans: no manifest for \$w in the bucket (expired?); skipped\"; fi; done
         head -64 /tmp/t2-plan.jsonl >/tmp/t2-64-plan.jsonl; head -256 /tmp/t2-plan.jsonl >/tmp/t2-256-plan.jsonl
-        wc -l /tmp/t1-plan.jsonl /tmp/t2-plan.jsonl /tmp/t2-64-plan.jsonl /tmp/t2-256-plan.jsonl" | tee -a "$OUT/run.log"
+        wc -l /tmp/t*-plan.jsonl" | tee -a "$OUT/run.log"
 }
 
 common="CYCLES=$CYCLES DEVICES=$DEVS DEVICES_PER_ARM=${DEVICES_PER_ARM-0} BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY${E_CONC_PER_PROXY:+ E_CONC_PER_PROXY=$E_CONC_PER_PROXY}"
@@ -369,24 +369,28 @@ step_idle98() {
     #   restart the proxies; idle L; B (unserved, idle L); serve1; idle S; C (served, idle S).
     # Expected under the hypothesis: A1 and A2 fail, the control, B and C do not. The idle a proxy
     # saw is sleep + client_run's polling slack; the arms' start times are in g2-idle98.order.
+    # IDLE98_UPTO stops after that many arms (a recycle-off control needs only serve0 and A1: 2);
+    # IDLE98_TAG suffixes every file name, so a second idle98 in one session keeps its own outputs.
     local arm=${IDLE98_ARM:-G2P01} L=${IDLE98_LONG_S:-420} S=${IDLE98_SHORT_S:-180} n=0 p
+    local upto=${IDLE98_UPTO:-7} tag=${IDLE98_TAG-}
     on "$CLIENT" "sudo sysctl -qw kernel.core_pattern=/var/tmp/core.%e.%p.%t; sudo dmesg | wc -l >/tmp/i98-dmesg0" >/dev/null
     i98_arm() {
+        ((n < upto)) || return 0
         n=$((n + 1))
         log "idle98: $1 ($arm)"
-        client_run "idle98-$n-$1" "PLAN=/tmp/t2-256-plan.jsonl PROXIES=$URLS ARMS=$arm CYCLES=1 CYCLE_BASE=$((n - 1)) CORES=1 FI_LOG_LEVEL=warn DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY OUT=/tmp/g2-idle98.csv bash bench/paths/interleave.sh T2-256"
+        client_run "idle98$tag-$n-$1" "PLAN=/tmp/t2-256-plan.jsonl PROXIES=$URLS ARMS=$arm CYCLES=1 CYCLE_BASE=$((n - 1)) CORES=1 FI_LOG_LEVEL=warn DEVICES=$DEVS BUF_GIB=$BUF_GIB E_CONCURRENCY=$E_CONCURRENCY OUT=/tmp/g2-idle98$tag.csv bash bench/paths/interleave.sh T2-256"
     }
-    i98_idle() { log "idle98: idle ${1}s"; sleep "$1"; }
-    start_proxies "$PROXY_ARGS" i98a
+    i98_idle() { ((n < upto)) || return 0; log "idle98: idle ${1}s"; sleep "$1"; }
+    start_proxies "$PROXY_ARGS" "i98a$tag"
     i98_arm serve0; i98_idle "$L"; i98_arm A1-served-idle; i98_arm control; i98_idle "$L"; i98_arm A2-served-idle
-    start_proxies "$PROXY_ARGS" i98b
+    ((n < upto)) && start_proxies "$PROXY_ARGS" "i98b$tag"
     i98_idle "$L"; i98_arm B-unserved-idle
     i98_arm serve1; i98_idle "$S"; i98_arm C-served-short
     for p in "${PROXIES[@]}"; do
-        on "$p" "sed 's/\x1b\[[0-9;]*m//g' /tmp/proxy-i98a.out /tmp/proxy-i98b.out | grep -E 'WARN|ERROR' | head -100" | sed "s/^/$p: /"
-    done >"$OUT/idle98-proxy-warn.txt"
-    on "$CLIENT" "sudo dmesg -T | tail -n +\$((\$(cat /tmp/i98-dmesg0) + 1)) | grep -iE 'efa|rdmap|xid|segfault' | grep -v gdrdrv | tail -100; echo '# cores'; ls -la /var/tmp/core.* 2>/dev/null; echo '# core limit lines'; grep -h 'core limit' /tmp/g2-idle98-*.out 2>/dev/null | head -3" >"$OUT/idle98-client-kernel.txt"
-    log "idle98: $(grep -c . "$OUT/idle98-proxy-warn.txt") proxy warning lines; $(awk '/^# cores/{f=1;next} /^# core limit/{f=0} f && /core\./' "$OUT/idle98-client-kernel.txt" | grep -c .) cores"
+        on "$p" "sed 's/\x1b\[[0-9;]*m//g' /tmp/proxy-i98a$tag.out /tmp/proxy-i98b$tag.out 2>/dev/null | grep -E 'WARN|ERROR' | head -100" | sed "s/^/$p: /"
+    done >"$OUT/idle98$tag-proxy-warn.txt"
+    on "$CLIENT" "sudo dmesg -T | tail -n +\$((\$(cat /tmp/i98-dmesg0) + 1)) | grep -iE 'efa|rdmap|xid|segfault' | grep -v gdrdrv | tail -100; echo '# cores'; ls -la /var/tmp/core.* 2>/dev/null; echo '# core limit lines'; grep -h 'core limit' /tmp/g2-idle98$tag-*.out 2>/dev/null | head -3" >"$OUT/idle98$tag-client-kernel.txt"
+    log "idle98$tag: $(grep -c . "$OUT/idle98$tag-proxy-warn.txt") proxy warning lines; $(awk '/^# cores/{f=1;next} /^# core limit/{f=0} f && /core\./' "$OUT/idle98$tag-client-kernel.txt" | grep -c .) cores"
     push
 }
 
