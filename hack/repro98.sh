@@ -26,15 +26,19 @@ rounds=$(( 1 + $(tr ',' '\n' <<<"$IDLE" | grep -c .) ))
 max_idle=$(tr ',' '\n' <<<"$IDLE" | sort -n | tail -1)
 log "repro98: client=$CLIENT proxy=$PROXY ($CIP) rounds=$rounds idle_before=$IDLE mib=$MIB"
 
-# Targets: one new process (and agent) per round, each waiting for its initiator connection.
-on "$CLIENT" "pkill -f adit-nixl-probe-target; rm -f /tmp/r98t.out; bgrun -o /tmp/r98t.out bash -c 'for k in \$(seq 1 $rounds); do adit-nixl-probe-target --mib $MIB --agent-name r98-\$k-\$\$ --timeout-s $((max_idle + 600)); echo TARGET_ROUND \$k exit=\$?; done'; sleep 8" | tee -a "$OUT/run.log"
+# Targets: one new process (and agent) per round, each waiting for its initiator connection. The
+# bracketed patterns keep pkill -f / pgrep -f from matching this command's own shell, and pgrep -x
+# cannot match: process names are truncated to 15 characters.
+on "$CLIENT" "pkill -f '[a]dit-nixl-probe-target'; rm -f /tmp/r98t.out" >/dev/null
+on "$CLIENT" "bgrun -o /tmp/r98t.out bash -c 'for k in \$(seq 1 $rounds); do adit-nixl-probe-target --mib $MIB --agent-name r98-\$k-\$\$ --timeout-s $((max_idle + 600)); echo TARGET_ROUND \$k exit=\$?; done'; sleep 8" | tee -a "$OUT/run.log"
 # The initiator: one agent for every round.
-on "$PROXY" "pkill -x adit-proxy; rm -f /tmp/r98i.out; bgrun -o /tmp/r98i.out adit-nixl-probe-init --target $CIP:8481 --mib $MIB --chunk-mib 8 --concurrency 32 --idle-before $IDLE" | tee -a "$OUT/run.log"
+on "$PROXY" "pkill -x adit-proxy; pkill -f '[a]dit-nixl-probe-init'; rm -f /tmp/r98i.out" >/dev/null
+on "$PROXY" "bgrun -o /tmp/r98i.out adit-nixl-probe-init --target $CIP:8481 --mib $MIB --chunk-mib 8 --concurrency 32 --idle-before $IDLE" | tee -a "$OUT/run.log"
 total=$(( $(tr ',' '\n' <<<"$IDLE" | paste -sd+ - | bc) + rounds * 120 + 120 ))
 t0=$SECONDS
 while (( SECONDS - t0 < total )); do
     sleep 30
-    on "$PROXY" "grep -cE '^ROUND' /tmp/r98i.out; pgrep -x adit-nixl-probe-init >/dev/null && echo running" >"$OUT/poll.txt"
+    on "$PROXY" "grep -cE '^ROUND' /tmp/r98i.out; pgrep -f '[a]dit-nixl-probe-init' >/dev/null && echo running" >"$OUT/poll.txt"
     log "  rounds done: $(head -1 "$OUT/poll.txt")"
     grep -q running "$OUT/poll.txt" || break
 done
