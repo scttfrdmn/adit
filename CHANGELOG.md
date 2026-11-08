@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`hack/g2.sh` counts core files only** in its r98 and idle98 summaries. The previous count also matched the core-limit lines, and logged "3 cores" in a session with none.
 - **`hack/repro98.sh` starts and stops its probes reliably.** Each `pkill` now runs in its own `spawn connect` call (a command line that also starts the target matched its own shell, even with a bracketed pattern), and the poll uses `pgrep -f '[a]dit-nixl-probe-init'` (`pgrep -x` never matched, since process names are truncated to 15 characters). The first two attempts in the PR #112 validation session ran no rounds because of these.
 - **`hack/stage-src.sh` also builds `aditctl` at the staged commit and uploads it to `s3://<bucket>/adit/bin/`,** where the on-box steps fetch it. The bench bucket's 7-day expiry had removed the old copies, and a session's plans step failed.
 - **Documentation audit.** The README now covers the protocol's registration step, every crate and binary, the stub guard and real-NIXL builds, test targets, a G2 session, the offline build path and where results live; it no longer claims zero copies as a fact or that lith shares `adit-fetch`. `bench/paths/README.md` gives the contract's defaults and lists the diagnostic scripts. Path C and D READMEs drop a local path and G3 scheduling, and point sizing and cost to #38. Script headers in `hack/` and `bench/paths/` now match their bodies (defaults, knobs, outputs, the missing `sizing` and `watchdog` phases of `D/run.sh`, and `hack/probe.sh`'s reference to a nonexistent `hack/g0.sh`).
@@ -26,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`bench/results/paths-g2112.csv`: the PR #112 validation run of the #98 idle test** (us-east-1a, 2026-11-08). With transport recycle on, all 7 arms passed the oracle, and the recycle counter stepped at A1, A2 and C. proxy-0 failed the health gate (107 Gb/s), so the rates are not results and the result is provisional.
 - **adit-proxy recreates its NIXL transport after idle (#98).** When an agent registers after the proxy has served one and then idled for at least `--recycle-idle-s` (default 180; 0 = never), the proxy first replaces its NIXL agent and backend, registers the pool again, and forgets every agent. Agents that register again (the client does so on `428`) continue as before.
   - **Why:** in the PR #108 validation run, retiring departed agents' metadata did not prevent the first writes failing after about 4 min idle; only a process restart did.
   - **Read back:** `/metrics` reports `adit_proxy_transport_recycled_total` and `recycle_idle_s` in `adit_proxy_config`.
