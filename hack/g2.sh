@@ -358,7 +358,7 @@ step_r98() {
     for p in "${PROXIES[@]}"; do
         on "$p" "tail -n +\$((\$(cat /tmp/r98-log0) + 1)) /tmp/proxy-base.out | sed 's/\x1b\[[0-9;]*m//g' | grep -E 'WARN|ERROR' | head -200" | sed "s/^/$p: /"
     done >"$OUT/r98-proxy-warn.txt"
-    log "r98: $(grep -c . "$OUT/r98-proxy-warn.txt") proxy warning lines; $(grep -c '/var/tmp/core\.' "$OUT/r98-client-kernel.txt") cores"
+    log "r98: $(grep -c . "$OUT/r98-proxy-warn.txt") proxy warning lines; $(awk '/^# cores/{f=1;next} /^# core limit/{f=0} f && /core\./' "$OUT/r98-client-kernel.txt" | grep -c .) cores"
     push
 }
 
@@ -386,7 +386,7 @@ step_idle98() {
         on "$p" "sed 's/\x1b\[[0-9;]*m//g' /tmp/proxy-i98a.out /tmp/proxy-i98b.out | grep -E 'WARN|ERROR' | head -100" | sed "s/^/$p: /"
     done >"$OUT/idle98-proxy-warn.txt"
     on "$CLIENT" "sudo dmesg -T | tail -n +\$((\$(cat /tmp/i98-dmesg0) + 1)) | grep -iE 'efa|rdmap|xid|segfault' | grep -v gdrdrv | tail -100; echo '# cores'; ls -la /var/tmp/core.* 2>/dev/null; echo '# core limit lines'; grep -h 'core limit' /tmp/g2-idle98-*.out 2>/dev/null | head -3" >"$OUT/idle98-client-kernel.txt"
-    log "idle98: $(grep -c . "$OUT/idle98-proxy-warn.txt") proxy warning lines; $(grep -c '/var/tmp/core\.' "$OUT/idle98-client-kernel.txt") cores"
+    log "idle98: $(grep -c . "$OUT/idle98-proxy-warn.txt") proxy warning lines; $(awk '/^# cores/{f=1;next} /^# core limit/{f=0} f && /core\./' "$OUT/idle98-client-kernel.txt" | grep -c .) cores"
     push
 }
 
