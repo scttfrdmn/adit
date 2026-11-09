@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`bench/results/paths-g2117.csv`: the #117 session.** It holds the #98 idle test with recycle off and on, the E8/E4/E2/E1 ladder on T2, the #54 path-B grid edge and the ceiling (us-east-1a, 2026-11-08/09). Recycle off: 1 of 3 served-then-idle arms failed. Recycle on: 0 of 3. The E8 rows are gated by a degraded proxy pair (#114).
 - **`bench/results/paths-g2112.csv`: the PR #112 validation run of the #98 idle test** (us-east-1a, 2026-11-08). With transport recycle on, all 7 arms passed the oracle, and the recycle counter stepped at A1, A2 and C. proxy-0 failed the health gate (107 Gb/s), so the rates are not results and the result is provisional.
 - **adit-proxy recreates its NIXL transport after idle (#98).** When an agent registers after the proxy has served one and then idled for at least `--recycle-idle-s` (default 180; 0 = never), the proxy first replaces its NIXL agent and backend, registers the pool again, and forgets every agent. Agents that register again (the client does so on `428`) continue as before.
   - **Why:** in the PR #108 validation run, retiring departed agents' metadata did not prevent the first writes failing after about 4 min idle; only a process restart did.
