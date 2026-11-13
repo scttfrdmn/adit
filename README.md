@@ -116,6 +116,8 @@ there, through `hack/install.sh` with `ADIT_SRC_S3`.
 
 ## Results
 
+The paths compared, diagrammed, and the results so far, with charts: [docs/](docs/README.md).
+
 Runners write to `bench/runs/` (not committed). A results file that is kept goes to
 `bench/results/*.csv`: `#` comment lines (instance, region, AMI, commit, flags,
 prices, data source), then the header row of its schema in `bench/schema/`, ending

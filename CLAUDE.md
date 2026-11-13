@@ -44,7 +44,8 @@ with GDS — and by how much on real workloads? Build what the gates need and no
 - **Changelog.** Keep a Changelog 1.1.0, `[Unreleased]` only. Every PR adds its entry.
 - **Planning.** GitHub Projects, milestones G0–G4, issues, labels. Decisions and corrections go in
   issue comments, not chat. No local plan, status or TODO files. Allowed local files: README,
-  LICENSE, CHANGELOG, CLAUDE.md, code, tests, scripts, `hack/`, `bench/`.
+  LICENSE, CHANGELOG, CLAUDE.md, code, tests, scripts, `hack/`, `bench/`, and `docs/` (project
+  documentation, the start of the project website; Scott, 2026-11-13).
 - **Merges.** Open PRs. Claude Code may squash-merge a PR touching only `hack/`, `bench/`,
   `.github/`, docs and tests once CI is green. Anything under `crates/` or `cmd/` waits for Scott.
 
