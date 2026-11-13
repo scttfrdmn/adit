@@ -1,0 +1,41 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='720' height='430' viewBox='0 0 720 430' role='img' aria-labelledby='t d'>
+<title id='t'>adit against the best tuned GPU-host path, per interleaved cycle</title><desc id='d'>Gb/s into 8 GPUs on T2-64 for adit with 7 proxies and KvikIO RemoteFile at 512 threads, 16 MiB tasks, 64 in flight, in three interleaved cycles.</desc>
+<rect width='720' height='430' fill='#1a1a19' rx='8'/>
+<text x='24.0' y='30.0' font-family='system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-size='16' font-weight='600' fill='#f0efec' text-anchor='start'>adit vs. the best tuned GPU-host path (same box, interleaved)</text>
+<text x='24.0' y='50.0' font-family='system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-size='12' font-weight='400' fill='#c3c2b7' text-anchor='start'>p5en.48xlarge, T2-64 (64 × 1 GiB, synthetic), 2026-11-09 · calibration</text>
+<line x1='70.0' y1='340.0' x2='690.0' y2='340.0' stroke='#383835' stroke-width='1'/>
+<text x='62.0' y='344.0' font-family='system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-size='11' font-weight='400' fill='#898781' text-anchor='end'>0</text>
+<line x1='70.0' y1='289.6' x2='690.0' y2='289.6' stroke='#2c2c2a' stroke-width='1'/>
+<text x='62.0' y='293.6' font-family='system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-size='11' font-weight='400' fill='#898781' text-anchor='end'>120</text>
+<line x1='70.0' y1='239.2' x2='690.0' y2='239.2' stroke='#2c2c2a' stroke-width='1'/>
+<text x='62.0' y='243.2' font-family='system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-size='11' font-weight='400' fill='#898781' text-anchor='end'>240</text>
+<line x1='70.0' y1='188.8' x2='690.0' y2='188.8' stroke='#2c2c2a' stroke-width='1'/>
+<text x='62.0' y='192.8' font-family='system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-size='11' font-weight='400' fill='#898781' text-anchor='end'>360</text>
+<line x1='70.0' y1='138.4' x2='690.0' y2='138.4' stroke='#2c2c2a' stroke-width='1'/>
+<text x='62.0' y='142.4' font-family='system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-size='11' font-weight='400' fill='#898781' text-anchor='end'>480</text>
+<line x1='70.0' y1='88.0' x2='690.0' y2='88.0' stroke='#2c2c2a' stroke-width='1'/>
+<text x='62.0' y='92.0' font-family='system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-size='11' font-weight='400' fill='#898781' text-anchor='end'>600</text>
+<text x='62.0' y='74.0' font-family='system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-size='11' font-weight='400' fill='#898781' text-anchor='end'>Gb/s</text>
+<text x='173.3' y='360.0' font-family='system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-size='12' font-weight='400' fill='#c3c2b7' text-anchor='middle'>cycle 1</text>
+<path d='M126.3,340.0 v-176.4 q0,-4 4,-4 h38 q4,0 4,4 v176.4 z' fill='#3987e5'/>
+<text x='149.3' y='153.6' font-family='system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-size='12' font-weight='600' fill='#f0efec' text-anchor='middle'>429</text>
+<path d='M174.3,340.0 v-36.6 q0,-4 4,-4 h38 q4,0 4,4 v36.6 z' fill='#d95926'/>
+<text x='197.3' y='293.4' font-family='system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-size='12' font-weight='600' fill='#f0efec' text-anchor='middle'>97</text>
+<text x='173.3' y='378.0' font-family='system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-size='12' font-weight='400' fill='#c3c2b7' text-anchor='middle'>adit / B = 4.4×</text>
+<text x='380.0' y='360.0' font-family='system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-size='12' font-weight='400' fill='#c3c2b7' text-anchor='middle'>cycle 2</text>
+<path d='M333.0,340.0 v-201.3 q0,-4 4,-4 h38 q4,0 4,4 v201.3 z' fill='#3987e5'/>
+<text x='356.0' y='128.7' font-family='system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-size='12' font-weight='600' fill='#f0efec' text-anchor='middle'>489</text>
+<path d='M381.0,340.0 v-36.9 q0,-4 4,-4 h38 q4,0 4,4 v36.9 z' fill='#d95926'/>
+<text x='404.0' y='293.1' font-family='system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-size='12' font-weight='600' fill='#f0efec' text-anchor='middle'>97</text>
+<text x='380.0' y='378.0' font-family='system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-size='12' font-weight='400' fill='#c3c2b7' text-anchor='middle'>adit / B = 5.0×</text>
+<text x='586.7' y='360.0' font-family='system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-size='12' font-weight='400' fill='#c3c2b7' text-anchor='middle'>cycle 3</text>
+<path d='M539.7,340.0 v-191.8 q0,-4 4,-4 h38 q4,0 4,4 v191.8 z' fill='#3987e5'/>
+<text x='562.7' y='138.2' font-family='system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-size='12' font-weight='600' fill='#f0efec' text-anchor='middle'>466</text>
+<path d='M587.7,340.0 v-37.0 q0,-4 4,-4 h38 q4,0 4,4 v37.0 z' fill='#d95926'/>
+<text x='610.7' y='293.0' font-family='system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-size='12' font-weight='600' fill='#f0efec' text-anchor='middle'>98</text>
+<text x='586.7' y='378.0' font-family='system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-size='12' font-weight='400' fill='#c3c2b7' text-anchor='middle'>adit / B = 4.8×</text>
+<rect x='70' y='398' width='12' height='12' rx='2' fill='#3987e5'/>
+<text x='88.0' y='408.0' font-family='system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-size='12' font-weight='400' fill='#c3c2b7' text-anchor='start'>adit, 7 proxies (E7)</text>
+<rect x='330' y='398' width='12' height='12' rx='2' fill='#d95926'/>
+<text x='348.0' y='408.0' font-family='system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-size='12' font-weight='400' fill='#c3c2b7' text-anchor='start'>KvikIO RemoteFile, best tuned (B)</text>
+</svg>
