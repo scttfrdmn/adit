@@ -1012,9 +1012,9 @@ dependencies = [
 
 [[package]]
 name = "mountpoint-s3-crt"
-version = "0.16.2"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46a29f3a5076a26c1e64c26a390eedade85e1ad27909328b2fdb67ec610f83fd"
+checksum = "794c31d1afea41e4de01f7ec28bbc15c7545615995a20a0af3e64277bd9c1f23"
 dependencies = [
  "futures",
  "libc",
@@ -1026,9 +1026,9 @@ dependencies = [
 
 [[package]]
 name = "mountpoint-s3-crt-sys"
-version = "0.17.1"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "508542d0dab7f1da8aab8a9d4f60f5546b59fe01763f0e9dd48d12f51cf67824"
+checksum = "4b93ac96e585b9425b0a2ee6365ba19d5e4569bd59d0ae69b8d751ceaa886da0"
 dependencies = [
  "bindgen 0.72.1",
  "cc",
